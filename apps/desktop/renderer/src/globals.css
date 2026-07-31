@@ -50,10 +50,10 @@
   --status-unconfigured: #d29922;
   --status-unavailable: #f85149;
 
-  /* 窗口交通灯（OS 惯例，固定色） */
-  --tl-close: #ff5f57;
-  --tl-min: #febc2e;
-  --tl-max: #28c840;
+  /* 等宽字体栈（代码块 / 路径 / 版本号复用） */
+  --font-mono:
+    "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Consolas, Monaco,
+    ui-monospace, monospace;
 }
 
 * {
@@ -114,14 +114,7 @@ a:hover {
 
 code,
 pre {
-  font-family:
-    "JetBrains Mono",
-    "Fira Code",
-    "Cascadia Code",
-    "SF Mono",
-    Consolas,
-    Monaco,
-    monospace;
+  font-family: var(--font-mono);
   font-size: 13.5px;
 }
 

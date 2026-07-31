@@ -348,6 +348,13 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentMessages, live]);
 
+  // 托盘菜单的"设置"入口
+  useEffect(() => {
+    const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
+    if (!claw?.on) return;
+    return claw.on("menu:open-settings", () => setSettingsOpen(true));
+  }, []);
+
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
   return (

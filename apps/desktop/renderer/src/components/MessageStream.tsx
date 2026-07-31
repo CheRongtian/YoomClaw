@@ -424,7 +424,7 @@ function ToolCardView({ card }: { card: ToolCard }) {
         }
         .tool-name {
           font-weight: 600;
-          font-family: ui-monospace, monospace;
+          font-family: var(--font-mono);
         }
         .tool-status {
           margin-left: auto;

@@ -356,7 +356,8 @@ export function getEffectiveMode(mode: ThemeMode): "light" | "dark" {
   return mode;
 }
 
-export function findTheme(id: string): ThemeDef | undefined {
+/** 按 id 取主题；找不到（比如用户删了自定义主题）时回落到第一个内置主题，保证永远有可用调色板 */
+export function findTheme(id: string): ThemeDef {
   return THEMES.find((t) => t.id === id) ?? THEMES_BUILTIN[0];
 }
 

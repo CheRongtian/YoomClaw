@@ -1,6 +1,12 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import SpiralLogo from "./SpiralLogo";
-import { SettingsIcon } from "./icons";
+import {
+  SettingsIcon,
+  WinMinimizeIcon,
+  WinMaximizeIcon,
+  WinRestoreIcon,
+  WinCloseIcon,
+} from "./icons";
 
 interface Props {
   onOpenSettings: () => void;
@@ -8,50 +14,90 @@ interface Props {
 }
 
 /**
- * 桌面应用风格的窗口框架
- * - 自定义标题栏（traffic light 窗口控件接 window.yoomclaw）
- * - 圆角阴影边框
- * - 标题栏右侧设置按钮 -> 打开外观设置面板
+ * 桌面应用窗口框架 —— Windows 平台惯例布局
+ * - 左侧：应用图标 + 名称（可拖拽，双击最大化/还原）
+ * - 右侧：设置 | 最小化 / 最大化·还原 / 关闭（46px 方形按钮，关闭悬停变红）
+ * - 最大化状态由主进程 window:state 事件同步，图标随之切换
  */
 export default function WindowFrame({ onOpenSettings, children }: Props) {
   const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    if (!claw) return;
+    let alive = true;
+
+    claw
+      .isMaximized()
+      .then((v) => {
+        if (alive) setMaximized(!!v);
+      })
+      .catch(() => {});
+
+    const off = claw.on("window:state", (payload) => {
+      const state = payload as { maximized?: boolean } | undefined;
+      setMaximized(!!state?.maximized);
+    });
+
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, [claw]);
 
   return (
     <div className="window-frame">
-      <div className="title-bar">
-        <div className="traffic-lights">
-          <span
-            className="light close"
-            title="关闭"
-            onClick={() => claw?.close()}
-          />
-          <span
-            className="light minimize"
-            title="最小化"
-            onClick={() => claw?.minimize()}
-          />
-          <span
-            className="light maximize"
-            title="最大化"
-            onClick={() => claw?.toggleMaximize()}
-          />
-        </div>
-        <div className="title-text">
-          <span className="title-logo">
-            <SpiralLogo size={16} />
+      <div className={`title-bar ${maximized ? "is-max" : ""}`}>
+        <div
+          className="tb-drag"
+          onDoubleClick={() => claw?.toggleMaximize()}
+          title=""
+        >
+          <span className="tb-logo">
+            <SpiralLogo size={15} />
           </span>
-          <span>YoomClaw</span>
+          <span className="tb-title">YoomClaw</span>
         </div>
-        <div className="title-actions">
+
+        <div className="tb-actions">
           <button
-            className="title-btn"
+            className="tb-btn"
             onClick={onOpenSettings}
-            title="外观设置"
+            title="设置"
+            aria-label="设置"
           >
-            <SettingsIcon size={16} />
+            <SettingsIcon size={15} />
+          </button>
+
+          <span className="tb-sep" />
+
+          <button
+            className="win-btn"
+            onClick={() => claw?.minimize()}
+            title="最小化"
+            aria-label="最小化"
+          >
+            <WinMinimizeIcon />
+          </button>
+          <button
+            className="win-btn"
+            onClick={() => claw?.toggleMaximize()}
+            title={maximized ? "向下还原" : "最大化"}
+            aria-label={maximized ? "向下还原" : "最大化"}
+          >
+            {maximized ? <WinRestoreIcon /> : <WinMaximizeIcon />}
+          </button>
+          <button
+            className="win-btn close"
+            onClick={() => claw?.close()}
+            title="关闭"
+            aria-label="关闭"
+          >
+            <WinCloseIcon />
           </button>
         </div>
       </div>
+
       <div className="window-body">{children}</div>
 
       <style jsx>{`
@@ -65,75 +111,87 @@ export default function WindowFrame({ onOpenSettings, children }: Props) {
         }
         .title-bar {
           display: flex;
-          align-items: center;
-          justify-content: space-between;
-          height: 38px;
-          padding: 0 12px;
+          align-items: stretch;
+          height: 36px;
           background: var(--bg-panel);
           border-bottom: 1px solid var(--border);
-          -webkit-app-region: drag;
           user-select: none;
           flex-shrink: 0;
         }
-        .traffic-lights {
+        /* 左侧品牌区同时是窗口拖拽区 */
+        .tb-drag {
+          flex: 1;
+          min-width: 0;
           display: flex;
+          align-items: center;
           gap: 8px;
-          align-items: center;
-          -webkit-app-region: no-drag;
+          padding-left: 12px;
+          -webkit-app-region: drag;
         }
-        .light {
-          width: 12px;
-          height: 12px;
-          border-radius: 50%;
-          display: inline-block;
-          cursor: pointer;
-          transition: filter 0.15s;
-        }
-        .light:hover {
-          filter: brightness(1.2);
-        }
-        .light.close {
-          background: var(--tl-close);
-        }
-        .light.minimize {
-          background: var(--tl-min);
-        }
-        .light.maximize {
-          background: var(--tl-max);
-        }
-        .title-text {
-          position: absolute;
-          left: 50%;
-          transform: translateX(-50%);
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 13px;
-          font-weight: 500;
-          color: var(--text-secondary);
-          pointer-events: none;
-        }
-        .title-logo {
+        .tb-logo {
           color: var(--primary);
           display: flex;
+          flex-shrink: 0;
         }
-        .title-actions {
-          display: flex;
-          gap: 4px;
-          -webkit-app-region: no-drag;
-        }
-        .title-btn {
-          padding: 5px 8px;
-          font-size: 14px;
-          border-radius: 6px;
+        .tb-title {
+          font-size: 12.5px;
+          font-weight: 500;
           color: var(--text-secondary);
+          letter-spacing: 0.2px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .tb-actions {
+          display: flex;
+          align-items: stretch;
+          -webkit-app-region: no-drag;
+          flex-shrink: 0;
+        }
+        /* 设置按钮：常规工具按钮观感，和系统控件区用竖线隔开 */
+        .tb-btn {
+          width: 38px;
           display: flex;
           align-items: center;
           justify-content: center;
+          color: var(--text-muted);
+          border-radius: 0;
+          transition: background 0.12s, color 0.12s;
         }
-        .title-btn:hover {
+        .tb-btn:hover {
           background: var(--bg-element);
           color: var(--text);
+        }
+        .tb-sep {
+          width: 1px;
+          margin: 8px 4px 8px 0;
+          background: var(--border);
+          flex-shrink: 0;
+        }
+        /* 系统窗口控件：Windows 惯用 46px 宽、无圆角、贴边 */
+        .win-btn {
+          width: 46px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--text-secondary);
+          border-radius: 0;
+          transition: background 0.12s, color 0.12s;
+        }
+        .win-btn:hover {
+          background: var(--bg-element);
+          color: var(--text);
+        }
+        .win-btn:active {
+          background: var(--bg-elevated);
+        }
+        .win-btn.close:hover {
+          background: var(--error);
+          color: var(--on-error);
+        }
+        .win-btn.close:active {
+          background: color-mix(in srgb, var(--error) 82%, black);
+          color: var(--on-error);
         }
         .window-body {
           flex: 1;

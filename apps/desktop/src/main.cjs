@@ -2,10 +2,10 @@
  * YoomClaw Desktop - Electron Main Process (CommonJS)
  *
  * 功能:
- *   - 创建主窗口 (无边框 + 自定义标题栏，红黄绿控件接 window.yoomclaw)
+ *   - 创建主窗口 (无边框 + 自定义标题栏，Windows 风格窗口控件接 window.yoomclaw)
  *   - 应用启动时拉起 Gateway 子进程（node + tsx 跑 packages/gateway/src/bin.ts，监听 :18789）
  *   - 退出时杀掉 Gateway 子进程
- *   - 系统托盘 (常驻) + 关闭最小化到托盘
+ *   - 系统托盘 (常驻)，关闭/最小化行为由用户设置决定 (settings.cjs)
  *   - 系统通知 (AI 回复完成时)
  *   - 单实例锁
  *   - 开发模式加载 http://localhost:5173（Vite 渲染器 dev server）
@@ -24,6 +24,7 @@ const {
 const nodePath = require("node:path");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
+const settingsStore = require("./settings.cjs");
 
 // 单实例锁
 const gotLock = app.requestSingleInstanceLock();
@@ -116,7 +117,38 @@ function createTrayIcon() {
   return nativeImage.createEmpty();
 }
 
+/** 把设置里那些"要作用到系统/窗口"的项真正生效 */
+function applyRuntimeSettings(s) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setAlwaysOnTop(!!s.alwaysOnTop);
+    try {
+      mainWindow.webContents.setZoomFactor(s.zoomFactor || 1);
+    } catch {}
+  }
+  // dev 模式下注册的是 electron.exe，会污染用户的启动项，所以只在打包后真正写入
+  if (!isDev) {
+    try {
+      app.setLoginItemSettings({
+        openAtLogin: !!s.launchAtLogin,
+        openAsHidden: !!s.startMinimized,
+      });
+    } catch (err) {
+      console.error("[Settings] 开机自启设置失败:", err.message);
+    }
+  }
+}
+
+/** 通知渲染层窗口最大化状态变化，标题栏据此切换"最大化/还原"图标 */
+function pushWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("window:state", {
+    maximized: mainWindow.isMaximized(),
+  });
+}
+
 function createWindow() {
+  const settings = settingsStore.load();
+
   mainWindow = new BrowserWindow({
     width: 960,
     height: 720,
@@ -125,7 +157,7 @@ function createWindow() {
     show: false,
     frame: false,
     titleBarStyle: "hidden",
-    trafficLightPosition: { x: 12, y: 14 },
+    alwaysOnTop: !!settings.alwaysOnTop,
     // 与渲染层默认主题（OpenCode dark）的 --bg 对齐，避免启动瞬间闪一下异色
     backgroundColor: "#0d0d0d",
     icon: nodePath.join(__dirname, "..", "assets", "app-icon.png"),
@@ -161,18 +193,38 @@ function createWindow() {
     mainWindow.loadFile(nodePath.join(STATIC_DIR, "index.html"));
   }
 
-  mainWindow.once("ready-to-show", () => {
-    mainWindow && mainWindow.show();
+  // 缩放要在页面加载完成后设置，否则会被这次导航重置掉
+  mainWindow.webContents.on("did-finish-load", () => {
+    try {
+      mainWindow.webContents.setZoomFactor(settingsStore.load().zoomFactor || 1);
+    } catch {}
+    pushWindowState();
   });
 
+  mainWindow.once("ready-to-show", () => {
+    if (!mainWindow) return;
+    // 开了"启动时最小化到托盘"就别抢焦点，静默待命
+    if (settingsStore.load().startMinimized) return;
+    mainWindow.show();
+  });
+
+  mainWindow.on("maximize", pushWindowState);
+  mainWindow.on("unmaximize", pushWindowState);
+
   mainWindow.on("close", (e) => {
-    if (!isQuitting) {
-      e.preventDefault();
-      mainWindow && mainWindow.hide();
-      if (!hasShownCloseHint) {
-        showTrayNotification("YoomClaw 已最小化到托盘", "点击托盘图标恢复窗口");
-        hasShownCloseHint = true;
-      }
+    if (isQuitting) return;
+
+    // 关闭按钮行为由用户设置决定：收进托盘（默认）或直接退出
+    if (settingsStore.load().closeAction === "quit") {
+      isQuitting = true;
+      return; // 放行，走正常退出流程
+    }
+
+    e.preventDefault();
+    mainWindow && mainWindow.hide();
+    if (!hasShownCloseHint) {
+      showTrayNotification("YoomClaw 已最小化到托盘", "点击托盘图标恢复窗口");
+      hasShownCloseHint = true;
     }
   });
 
@@ -204,6 +256,15 @@ function createTray() {
       click: () => {
         mainWindow && mainWindow.show();
         mainWindow && mainWindow.webContents.send("menu:new-chat");
+      },
+    },
+    {
+      label: "设置",
+      click: () => {
+        if (!mainWindow) return;
+        mainWindow.show();
+        mainWindow.focus();
+        mainWindow.webContents.send("menu:open-settings");
       },
     },
     { type: "separator" },
@@ -239,6 +300,7 @@ function showTrayNotification(title, body) {
 // ===== IPC 通信 =====
 
 ipcMain.handle("notify", async (_evt, payload) => {
+  if (!settingsStore.load().notifyOnComplete) return;
   if (Notification.isSupported() && payload) {
     new Notification({
       title: payload.title || "YoomClaw",
@@ -259,7 +321,17 @@ ipcMain.handle("quit", async () => {
 });
 
 ipcMain.handle("window:minimize", async () => {
-  mainWindow && mainWindow.minimize();
+  if (!mainWindow) return;
+  // "最小化到托盘"时不进任务栏，直接隐藏窗口
+  if (settingsStore.load().minimizeAction === "tray") {
+    mainWindow.hide();
+    if (!hasShownCloseHint) {
+      showTrayNotification("YoomClaw 已最小化到托盘", "点击托盘图标恢复窗口");
+      hasShownCloseHint = true;
+    }
+    return;
+  }
+  mainWindow.minimize();
 });
 
 ipcMain.handle("window:toggle-maximize", async () => {
@@ -279,12 +351,39 @@ ipcMain.handle("window:is-maximized", async () => {
   return mainWindow ? mainWindow.isMaximized() : false;
 });
 
+// ===== 应用设置 =====
+
+ipcMain.handle("settings:get", async () => settingsStore.load());
+
+ipcMain.handle("settings:set", async (_evt, patch) => {
+  const next = settingsStore.save(patch || {});
+  applyRuntimeSettings(next);
+  return next;
+});
+
+ipcMain.handle("app:info", async () => ({
+  version: app.getVersion(),
+  electron: process.versions.electron,
+  chrome: process.versions.chrome,
+  node: process.versions.node,
+  platform: process.platform,
+  arch: process.arch,
+  dataDir: app.getPath("userData"),
+  isDev,
+}));
+
+ipcMain.handle("app:open-data-dir", async () => {
+  await shell.openPath(app.getPath("userData"));
+});
+
 // ===== App Lifecycle =====
 
 app.whenReady().then(() => {
   startGateway();
   createWindow();
   createTray();
+  // 启动时把持久化设置同步到系统层（开机自启等）
+  applyRuntimeSettings(settingsStore.load());
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

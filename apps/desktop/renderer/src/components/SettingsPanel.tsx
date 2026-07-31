@@ -1,20 +1,34 @@
-import { useTheme } from "../theme/ThemeProvider";
-import type { ThemeMode } from "../theme/themes";
-import { SunIcon, MoonIcon, MonitorIcon, CheckIcon, CloseIcon } from "./icons";
+import { useEffect, useState } from "react";
+import { CloseIcon, SlidersIcon, PaletteIcon, InfoIcon } from "./icons";
+import GeneralSettings from "./settings/GeneralSettings";
+import AppearanceSettings from "./settings/AppearanceSettings";
+import AboutSettings from "./settings/AboutSettings";
 
 interface Props {
   open: boolean;
   onClose: () => void;
 }
 
-const MODES: { value: ThemeMode; label: string; Icon: typeof SunIcon }[] = [
-  { value: "light", label: "浅色", Icon: SunIcon },
-  { value: "dark", label: "深色", Icon: MoonIcon },
-  { value: "system", label: "跟随系统", Icon: MonitorIcon },
+type TabId = "general" | "appearance" | "about";
+
+const TABS: { id: TabId; label: string; Icon: typeof SlidersIcon }[] = [
+  { id: "general", label: "通用", Icon: SlidersIcon },
+  { id: "appearance", label: "外观", Icon: PaletteIcon },
+  { id: "about", label: "关于", Icon: InfoIcon },
 ];
 
+/** 设置对话框：左侧分类导航 + 右侧内容，Esc 关闭 */
 export default function SettingsPanel({ open, onClose }: Props) {
-  const { themeId, mode, themes, setThemeId, setMode } = useTheme();
+  const [tab, setTab] = useState<TabId>("general");
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -24,58 +38,38 @@ export default function SettingsPanel({ open, onClose }: Props) {
         className="settings-panel"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="外观设置"
+        aria-label="设置"
       >
-        <div className="sp-head">
-          <span className="sp-title">外观</span>
-          <button className="sp-close" onClick={onClose} aria-label="关闭">
-            <CloseIcon size={15} />
-          </button>
-        </div>
+        <nav className="sp-nav">
+          <div className="sp-nav-title">设置</div>
+          {TABS.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              className={`nav-item ${tab === id ? "active" : ""}`}
+              onClick={() => setTab(id)}
+            >
+              <Icon size={15} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
 
-        <div className="sp-section">
-          <div className="sp-label">模式</div>
-          <div className="mode-seg">
-            {MODES.map(({ value, label, Icon }) => (
-              <button
-                key={value}
-                className={`mode-opt ${mode === value ? "active" : ""}`}
-                onClick={() => setMode(value)}
-              >
-                <Icon size={15} />
-                <span>{label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
+        <section className="sp-main">
+          <header className="sp-head">
+            <span className="sp-title">
+              {TABS.find((t) => t.id === tab)?.label}
+            </span>
+            <button className="sp-close" onClick={onClose} aria-label="关闭">
+              <CloseIcon size={15} />
+            </button>
+          </header>
 
-        <div className="sp-section">
-          <div className="sp-label">
-            颜色主题 <span className="sp-count">{themes.length}</span>
+          <div className="sp-body">
+            {tab === "general" && <GeneralSettings />}
+            {tab === "appearance" && <AppearanceSettings />}
+            {tab === "about" && <AboutSettings />}
           </div>
-          <div className="theme-grid">
-            {themes.map((t) => {
-              const active = t.id === themeId;
-              return (
-                <button
-                  key={t.id}
-                  className={`theme-card ${active ? "active" : ""}`}
-                  onClick={() => setThemeId(t.id)}
-                >
-                  <span className="tc-name">{t.name}</span>
-                  {active && (
-                    <span className="tc-check">
-                      <CheckIcon size={13} />
-                    </span>
-                  )}
-                  {t.source === "opencode" && <span className="tc-tag">oc</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="sp-foot">主题实时预览 · 自动保存到本地</div>
+        </section>
       </div>
 
       <style jsx>{`
@@ -89,26 +83,72 @@ export default function SettingsPanel({ open, onClose }: Props) {
           z-index: 200;
         }
         .settings-panel {
-          width: 460px;
-          max-width: 92vw;
-          max-height: 82vh;
           display: flex;
-          flex-direction: column;
+          width: 660px;
+          max-width: 94vw;
+          height: 540px;
+          max-height: 86vh;
           background: var(--bg-elevated);
           border: 1px solid var(--border);
-          border-radius: 14px;
-          box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+          border-radius: 12px;
+          box-shadow: 0 24px 64px var(--modal-mask);
           overflow: hidden;
+        }
+        .sp-nav {
+          width: 172px;
+          flex-shrink: 0;
+          background: var(--bg-panel);
+          border-right: 1px solid var(--border);
+          padding: 14px 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .sp-nav-title {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text-muted);
+          padding: 2px 10px 12px;
+        }
+        .nav-item {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          width: 100%;
+          padding: 8px 10px;
+          border-radius: 7px;
+          font-size: 13px;
+          color: var(--text-secondary);
+          text-align: left;
+          transition: background 0.14s, color 0.14s;
+        }
+        .nav-item:hover {
+          background: var(--bg-element);
+          color: var(--text);
+        }
+        .nav-item.active {
+          background: color-mix(in srgb, var(--primary) 14%, transparent);
+          color: var(--text);
+        }
+        .nav-item.active :global(svg) {
+          color: var(--primary);
+        }
+        .sp-main {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
         }
         .sp-head {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 14px 16px;
+          padding: 13px 14px 13px 18px;
           border-bottom: 1px solid var(--border);
+          flex-shrink: 0;
         }
         .sp-title {
-          font-size: 15px;
+          font-size: 14px;
           font-weight: 600;
           color: var(--text);
         }
@@ -120,113 +160,15 @@ export default function SettingsPanel({ open, onClose }: Props) {
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 13px;
         }
         .sp-close:hover {
           background: var(--bg-element);
           color: var(--text);
         }
-        .sp-section {
-          padding: 14px 16px;
-          border-bottom: 1px solid var(--border-subtle);
-        }
-        .sp-label {
-          font-size: 12px;
-          color: var(--text-muted);
-          margin-bottom: 10px;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .sp-count {
-          font-size: 10px;
-          background: var(--bg-element);
-          color: var(--text-muted);
-          padding: 1px 6px;
-          border-radius: 999px;
-        }
-        .mode-seg {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 6px;
-        }
-        .mode-opt {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-          padding: 9px 6px;
-          border-radius: 8px;
-          border: 1px solid var(--border);
-          background: var(--bg-panel);
-          color: var(--text-secondary);
-          font-size: 12.5px;
-          transition: all 0.15s;
-        }
-        .mode-opt:hover {
-          border-color: var(--border-active);
-          color: var(--text);
-        }
-        .mode-opt.active {
-          border-color: var(--primary);
-          color: var(--text);
-          background: color-mix(in srgb, var(--primary) 14%, transparent);
-        }
-        .mode-opt.active :global(svg) {
-          color: var(--primary);
-        }
-        .theme-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 6px;
-          overflow-y: auto;
-          max-height: 46vh;
-          padding-right: 4px;
-        }
-        .theme-card {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 9px 11px;
-          border-radius: 8px;
-          border: 1px solid var(--border);
-          background: var(--bg-panel);
-          color: var(--text-secondary);
-          font-size: 12.5px;
-          text-align: left;
-          transition: all 0.15s;
-        }
-        .theme-card:hover {
-          border-color: var(--border-active);
-          color: var(--text);
-        }
-        .theme-card.active {
-          border-color: var(--primary);
-          color: var(--text);
-          background: color-mix(in srgb, var(--primary) 14%, transparent);
-        }
-        .tc-name {
+        .sp-body {
           flex: 1;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .tc-check {
-          color: var(--primary);
-          display: flex;
-        }
-        .tc-tag {
-          font-size: 9px;
-          color: var(--text-muted);
-          background: var(--bg-element);
-          padding: 0 4px;
-          border-radius: 4px;
-          flex-shrink: 0;
-        }
-        .sp-foot {
-          padding: 12px 16px;
-          font-size: 11px;
-          color: var(--text-muted);
+          overflow-y: auto;
+          padding: 16px 18px 22px;
         }
       `}</style>
     </div>

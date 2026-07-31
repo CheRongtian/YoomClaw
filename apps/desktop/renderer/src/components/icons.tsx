@@ -163,6 +163,102 @@ export function MonitorIcon(p: IconProps) {
   );
 }
 
+// ===== Windows 标题栏控件 =====
+// 系统控件是 1px 细直线 + 方端点，用上面的圆头 Svg 画会明显偏"圆润"，
+// 所以单独走一套 10x10 viewBox 的精确图元。
+
+function WinSvg({
+  size = 10,
+  className,
+  children,
+}: IconProps & { children: React.ReactNode }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 10 10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1}
+      shapeRendering="crispEdges"
+      className={className}
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
+
+export function WinMinimizeIcon(p: IconProps) {
+  return (
+    <WinSvg {...p}>
+      <line x1="0" y1="5.5" x2="10" y2="5.5" />
+    </WinSvg>
+  );
+}
+
+export function WinMaximizeIcon(p: IconProps) {
+  return (
+    <WinSvg {...p}>
+      <rect x="0.5" y="0.5" width="9" height="9" />
+    </WinSvg>
+  );
+}
+
+/** 已最大化时显示：双层叠放的方框（还原） */
+export function WinRestoreIcon(p: IconProps) {
+  return (
+    <WinSvg {...p}>
+      <rect x="0.5" y="2.5" width="7" height="7" />
+      <polyline points="2.5,2.5 2.5,0.5 9.5,0.5 9.5,7.5 7.5,7.5" />
+    </WinSvg>
+  );
+}
+
+export function WinCloseIcon(p: IconProps) {
+  return (
+    <svg
+      width={p.size ?? 10}
+      height={p.size ?? 10}
+      viewBox="0 0 10 10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.1}
+      className={p.className}
+      aria-hidden="true"
+    >
+      <line x1="0.5" y1="0.5" x2="9.5" y2="9.5" />
+      <line x1="9.5" y1="0.5" x2="0.5" y2="9.5" />
+    </svg>
+  );
+}
+
+export function SlidersIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+      <path d="M1 14h6M9 8h6M17 16h6" />
+    </Svg>
+  );
+}
+
+export function InfoIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 16v-4M12 8h.01" />
+    </Svg>
+  );
+}
+
+export function FolderIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+    </Svg>
+  );
+}
+
 export function PaletteIcon(p: IconProps) {
   return (
     <Svg {...p}>
