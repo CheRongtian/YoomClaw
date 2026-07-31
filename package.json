@@ -6,7 +6,8 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -n vite,electron -c blue,green \"pnpm --filter @yoomclaw/desktop-renderer dev\" \"pnpm --filter @yoomclaw/desktop dev\"",
+    "dev": "concurrently -n vite,electron -c blue,green \"pnpm --dir apps/desktop/renderer run dev\" \"pnpm --filter @yoomclaw/desktop dev\"",
+    "dev:renderer": "pnpm --dir apps/desktop/renderer run dev",
     "dev:gateway": "pnpm --filter @yoomclaw/gateway dev",
     "dev:desktop": "pnpm --filter @yoomclaw/desktop dev",
     "dev:all": "pnpm dev",

@@ -1,6 +1,9 @@
 packages:
   - "packages/*"
   - "apps/*"
+  # renderer 嵌在 apps/desktop/ 下，不被 apps/* 匹配，必须显式声明，
+  # 否则 `pnpm --filter @yoomclaw/desktop-renderer` 匹配不到项目，Vite 不会启动。
+  - "apps/desktop/renderer"
 allowBuilds:
   electron: true
   esbuild: true

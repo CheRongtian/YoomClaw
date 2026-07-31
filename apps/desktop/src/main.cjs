@@ -126,7 +126,8 @@ function createWindow() {
     frame: false,
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 12, y: 14 },
-    backgroundColor: "#1a1b1e",
+    // 与渲染层默认主题（OpenCode dark）的 --bg 对齐，避免启动瞬间闪一下异色
+    backgroundColor: "#0d0d0d",
     icon: nodePath.join(__dirname, "..", "assets", "app-icon.png"),
     webPreferences: {
       preload: nodePath.join(__dirname, "preload.cjs"),
@@ -137,7 +138,25 @@ function createWindow() {
   });
 
   if (isDev) {
-    mainWindow.loadURL(RENDERER_DEV_URL);
+    // Vite dev server 常比 Electron 晚几秒就绪，直接 loadURL 会吃到
+    // ERR_CONNECTION_REFUSED 并永远停在空白窗口。这里失败即重试，最多 ~60s。
+    let devLoadTries = 0;
+    const MAX_DEV_LOAD_TRIES = 60;
+    const loadDevUrl = () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.loadURL(RENDERER_DEV_URL).catch(() => {});
+    };
+    mainWindow.webContents.on("did-fail-load", (_e, errorCode) => {
+      if (errorCode === -3) return; // ERR_ABORTED：正常的导航打断，不算失败
+      if (devLoadTries++ >= MAX_DEV_LOAD_TRIES) {
+        console.error(
+          `[YoomClaw] 连不上渲染器 dev server (${RENDERER_DEV_URL})，请确认 Vite 已启动`
+        );
+        return;
+      }
+      setTimeout(loadDevUrl, 1000);
+    });
+    loadDevUrl();
   } else {
     mainWindow.loadFile(nodePath.join(STATIC_DIR, "index.html"));
   }
