@@ -95,7 +95,7 @@ export default function SessionSidebar({
         .sidebar {
           width: 260px;
           flex-shrink: 0;
-          background: var(--bg-sidebar);
+          background: var(--bg-panel);
           border-right: 1px solid var(--border);
           display: flex;
           flex-direction: column;
@@ -119,7 +119,7 @@ export default function SessionSidebar({
         }
         .brand-logo {
           display: flex;
-          color: var(--accent);
+          color: var(--primary);
         }
         .brand-name {
           font-size: 17px;
@@ -135,9 +135,9 @@ export default function SessionSidebar({
         .new-session-btn {
           margin: 0 12px 10px;
           padding: 10px 12px;
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
           border-radius: 8px;
-          color: var(--text-primary);
+          color: var(--text);
           font-weight: 500;
           font-size: 13.5px;
           display: flex;
@@ -171,15 +171,15 @@ export default function SessionSidebar({
           cursor: pointer;
           margin-bottom: 2px;
         }
-        .session-item:hover { background: var(--bg-tertiary); }
-        .session-item.active { background: var(--bg-tertiary); }
+        .session-item:hover { background: var(--bg-element); }
+        .session-item.active { background: var(--bg-element); }
         .session-info { flex: 1; min-width: 0; }
         .session-title {
           font-size: 13.5px;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          color: var(--text-primary);
+          color: var(--text);
         }
         .session-meta {
           font-size: 11px;
@@ -210,7 +210,7 @@ export default function SessionSidebar({
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: #22c55e;
+          background: var(--success);
         }
         @media (max-width: 768px) {
           .sidebar {

@@ -5,10 +5,11 @@ import SessionSidebar from "./SessionSidebar";
 import ComposeBar from "./ComposeBar";
 import WindowFrame from "./WindowFrame";
 import SpiralLogo from "./SpiralLogo";
+import SettingsPanel from "./SettingsPanel";
 import { MenuIcon, PlusIcon, WarningIcon } from "./icons";
 
-// 桌面端：直连同机 Gateway（Electron 主进程拉起，固定 18789）。
 const GATEWAY_URL = "http://localhost:18789";
+const CONFIRM_MODE_KEY = "yoomclaw-confirm-mode";
 
 interface SessionData {
   id: string;
@@ -31,11 +32,11 @@ export default function ChatPage() {
   const [live, setLive] = useState<LiveAssistant | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [connected, setConnected] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmMode, setConfirmMode] = useState<"confirm" | "no-confirm">(
     () =>
-      (localStorage.getItem("claw-confirm-mode") as "confirm" | "no-confirm") ||
+      (localStorage.getItem(CONFIRM_MODE_KEY) as "confirm" | "no-confirm") ||
       "confirm",
   );
   const confirmModeRef = useRef<"confirm" | "no-confirm">("confirm");
@@ -45,16 +46,6 @@ export default function ChatPage() {
   const liveRef = useRef<LiveAssistant | null>(null);
   const disposedRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const saved = localStorage.getItem("claw-theme");
-    if (saved === "light" || saved === "dark") setTheme(saved);
-  }, []);
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("claw-theme", theme);
-  }, [theme]);
 
   useEffect(() => {
     refreshSessions();
@@ -76,7 +67,8 @@ export default function ChatPage() {
     } catch (err) {
       console.error("Failed to load sessions:", err);
     }
-  }, [apiBase, currentSessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase]);
 
   const selectSession = useCallback(
     async (id: string) => {
@@ -118,7 +110,7 @@ export default function ChatPage() {
         setCurrentMessages([]);
       }
     } catch (err) {
-      console.error("Failed to create session:", err);
+      console.error("Failed to load session:", err);
     }
   }, [apiBase]);
 
@@ -138,8 +130,7 @@ export default function ChatPage() {
     [apiBase, currentSessionId],
   );
 
-  // ===== WebSocket 连接（聊天走 WS，便于把 tool.decision 发回服务端）=====
-
+  // ===== WebSocket 连接 =====
   const sendConfirmMode = useCallback((mode: "confirm" | "no-confirm") => {
     const sock = wsRef.current;
     if (sock && sock.readyState === WebSocket.OPEN) {
@@ -148,7 +139,7 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("claw-confirm-mode", confirmMode);
+    localStorage.setItem(CONFIRM_MODE_KEY, confirmMode);
     sendConfirmMode(confirmMode);
   }, [confirmMode, sendConfirmMode]);
 
@@ -238,7 +229,7 @@ export default function ChatPage() {
         next = {
           ...l,
           progress: null,
-          text: (l.text ? l.text + "\n\n" : "") + "⚠️ " + ev.message,
+          text: (l.text ? l.text + "\n\n" : "") + ev.message,
         };
         break;
       default:
@@ -360,10 +351,7 @@ export default function ChatPage() {
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
   return (
-    <WindowFrame
-      theme={theme}
-      onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
-    >
+    <WindowFrame onOpenSettings={() => setSettingsOpen(true)}>
       <div className="app-shell">
         <SessionSidebar
           sessions={sessions}
@@ -384,9 +372,9 @@ export default function ChatPage() {
             >
               <MenuIcon size={18} />
             </button>
-              <h1 className="chat-title">
-                <SpiralLogo size={18} /> {currentSession?.title ?? "YoomClaw"}
-              </h1>
+            <h1 className="chat-title">
+              <SpiralLogo size={18} /> {currentSession?.title ?? "YoomClaw"}
+            </h1>
             <span
               className={`conn ${connected ? "on" : "off"}`}
               title={connected ? "已连接" : "连接中…"}
@@ -449,6 +437,8 @@ export default function ChatPage() {
         </div>
       )}
 
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
       <style jsx>{`
         .app-shell {
           display: flex;
@@ -461,7 +451,7 @@ export default function ChatPage() {
           display: flex;
           flex-direction: column;
           min-width: 0;
-          background: var(--bg-primary);
+          background: var(--bg);
         }
         .chat-header {
           display: flex;
@@ -469,7 +459,7 @@ export default function ChatPage() {
           gap: 12px;
           padding: 10px 16px;
           border-bottom: 1px solid var(--border);
-          background: var(--bg-secondary);
+          background: var(--bg-panel);
           -webkit-app-region: drag;
         }
         .header-btn {
@@ -483,8 +473,8 @@ export default function ChatPage() {
           justify-content: center;
         }
         .header-btn:hover {
-          background: var(--bg-tertiary);
-          color: var(--text-primary);
+          background: var(--bg-element);
+          color: var(--text);
         }
         .header-btn.new-chat {
           width: 32px;
@@ -497,13 +487,13 @@ export default function ChatPage() {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          color: var(--text-primary);
+          color: var(--text);
           display: flex;
           align-items: center;
           gap: 6px;
         }
         .chat-title :global(svg) {
-          color: var(--accent);
+          color: var(--primary);
         }
         .conn {
           width: 8px;
@@ -511,10 +501,10 @@ export default function ChatPage() {
           border-radius: 50%;
         }
         .conn.on {
-          background: #3fb950;
+          background: var(--success);
         }
         .conn.off {
-          background: #e5484d;
+          background: var(--error);
         }
         .empty-state {
           flex: 1;
@@ -526,19 +516,19 @@ export default function ChatPage() {
           color: var(--text-secondary);
         }
         .empty-state :global(svg) {
-          color: var(--accent);
+          color: var(--primary);
           margin-bottom: 8px;
         }
         .empty-state h2 {
           font-size: 28px;
-          color: var(--text-primary);
+          color: var(--text);
           font-weight: 600;
           letter-spacing: -0.5px;
         }
         .modal-mask {
           position: fixed;
           inset: 0;
-          background: rgba(0, 0, 0, 0.5);
+          background: var(--modal-mask);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -547,7 +537,7 @@ export default function ChatPage() {
         .modal {
           width: 420px;
           max-width: 90vw;
-          background: var(--bg-secondary);
+          background: var(--bg-elevated);
           border: 1px solid var(--border);
           border-radius: 12px;
           padding: 18px;
@@ -556,14 +546,14 @@ export default function ChatPage() {
         .modal-title {
           font-size: 15px;
           font-weight: 600;
-          color: var(--text-primary);
+          color: var(--text);
           margin-bottom: 10px;
           display: flex;
           align-items: center;
           gap: 6px;
         }
         .modal-title :global(svg) {
-          color: #ffd35c;
+          color: var(--warning);
         }
         .modal-name {
           font-size: 13px;
@@ -582,7 +572,7 @@ export default function ChatPage() {
         }
         .modal-reason {
           font-size: 13px;
-          color: #ffd35c;
+          color: var(--warning);
           margin-bottom: 16px;
         }
         .modal-actions {
@@ -598,15 +588,15 @@ export default function ChatPage() {
           cursor: pointer;
         }
         .btn.deny {
-          background: var(--bg-tertiary);
-          color: var(--text-primary);
+          background: var(--bg-element);
+          color: var(--text);
         }
         .btn.allow {
-          background: var(--accent);
-          color: #fff;
+          background: var(--primary);
+          color: var(--on-primary);
         }
         .btn:hover {
-          filter: brightness(1.1);
+          filter: brightness(1.08);
         }
       `}</style>
     </WindowFrame>

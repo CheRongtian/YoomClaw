@@ -1,38 +1,59 @@
+/* ============================================================
+   YoomClaw 设计 token（默认值 = OpenCode 深色）。
+   实际运行时由 ThemeProvider 用所选主题的调色板覆盖这些变量。
+   ============================================================ */
 :root {
-  /* 深色主题 - 默认 */
-  --bg-primary: #1a1b1e;
-  --bg-secondary: #232428;
-  --bg-sidebar: #1f2024;
-  --bg-tertiary: #2c2d33;
-  --bg-input: #2a2b31;
-  --bg-titlebar: #18191c;
-  --text-primary: #e8eaed;
-  --text-secondary: #a8abb5;
-  --text-muted: #6b6e78;
-  --accent: #ff6b35;
-  --accent-hover: #e85a2b;
-  --border: #34363d;
-  --user-bubble: #2563eb;
-  --assistant-bubble: #2c2d33;
-  --code-bg: #18191c;
-}
+  --bg: #0d0d0d;
+  --bg-panel: #171717;
+  --bg-element: #1d1d1d;
+  --bg-elevated: #1d1d1d;
+  --bg-input: #1d1d1d;
+  --border: #282828;
+  --border-subtle: #222222;
+  --border-active: #3a3a3a;
+  --text: #ececec;
+  --text-secondary: #c9c9c9;
+  --text-muted: #8a8a8a;
+  --text-dim: #8a8a8a;
+  --primary: #4a9eff;
+  --secondary: #7aa2f7;
+  --accent: #4a9eff;
+  --on-primary: #0d0d0d;
+  --error: #f85149;
+  --on-error: #ffffff;
+  --warning: #d29922;
+  --success: #3fb950;
+  --info: #58a6ff;
 
-[data-theme="light"] {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f7f7f8;
-  --bg-sidebar: #fafafa;
-  --bg-tertiary: #ececf1;
-  --bg-input: #ffffff;
-  --bg-titlebar: #f3f3f4;
-  --text-primary: #1a1a1a;
-  --text-secondary: #4a4a4a;
-  --text-muted: #8e8e8e;
-  --accent: #ff6b35;
-  --accent-hover: #e85a2b;
-  --border: #e5e5e5;
-  --user-bubble: #2563eb;
-  --assistant-bubble: #f0f0f0;
-  --code-bg: #f7f7f8;
+  --send-bg: #4a9eff;
+  --send-fg: #0d0d0d;
+  --send-bg-hover: #4a9eff;
+  --composer-bg: #171717;
+  --composer-border: #1d1d1d;
+  --composer-focus-border: #4a9eff;
+  --user-bubble-bg: #4a9eff;
+  --user-bubble-fg: #0d0d0d;
+  --user-bubble-border: #4a9eff;
+  --assistant-bubble-bg: #1d1d1d;
+  --assistant-bubble-border: #282828;
+  --tool-call-bg: #171717;
+  --tool-call-border: #1d1d1d;
+  --code-bg: #1d1d1d;
+  --scrollbar-thumb: #1d1d1d;
+  --scrollbar-thumb-hover: #282828;
+  --modal-mask: rgba(0, 0, 0, 0.5);
+
+  --status-running: #4a9eff;
+  --status-attention: #d29922;
+  --status-completed: #3fb950;
+  --status-ready: #3fb950;
+  --status-unconfigured: #d29922;
+  --status-unavailable: #f85149;
+
+  /* 窗口交通灯（OS 惯例，固定色） */
+  --tl-close: #ff5f57;
+  --tl-min: #febc2e;
+  --tl-max: #28c840;
 }
 
 * {
@@ -41,7 +62,9 @@
   padding: 0;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
 }
 
@@ -57,8 +80,8 @@ body {
     Helvetica,
     Arial,
     sans-serif;
-  background: var(--bg-primary);
-  color: var(--text-primary);
+  background: var(--bg);
+  color: var(--text);
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -74,15 +97,23 @@ button {
   cursor: pointer;
   padding: 0;
   border-radius: 6px;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-button:hover { background: var(--bg-tertiary); }
+button:hover {
+  background: var(--bg-element);
+}
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
 
-code, pre {
+code,
+pre {
   font-family:
     "JetBrains Mono",
     "Fira Code",
@@ -94,12 +125,77 @@ code, pre {
   font-size: 13.5px;
 }
 
-.katex { font-size: 1.05em; }
-
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: var(--bg-tertiary);
-  border-radius: 4px;
+.katex {
+  font-size: 1.05em;
 }
-::-webkit-scrollbar-thumb:hover { background: var(--border); }
+
+::selection {
+  background: color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* 代码高亮（highlight.js）令牌颜色跟随主题 token，避免固定暗色样式表在浅色下失效 */
+.hljs {
+  background: transparent;
+  color: var(--text);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--text-muted);
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type,
+.hljs-built_in {
+  color: var(--primary);
+}
+.hljs-string,
+.hljs-meta-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attr,
+.hljs-template-tag {
+  color: var(--success);
+}
+.hljs-number,
+.hljs-meta,
+.hljs-symbol {
+  color: var(--warning);
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--accent);
+}
+.hljs-attribute,
+.hljs-variable,
+.hljs-property,
+.hljs-params {
+  color: var(--info);
+}
+.hljs-deletion {
+  color: var(--error);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}

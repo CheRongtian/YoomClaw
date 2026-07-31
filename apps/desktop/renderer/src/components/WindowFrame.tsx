@@ -1,10 +1,9 @@
 import { ReactNode } from "react";
 import SpiralLogo from "./SpiralLogo";
-import { SunIcon, MoonIcon } from "./icons";
+import { SettingsIcon } from "./icons";
 
 interface Props {
-  theme: "dark" | "light";
-  onToggleTheme: () => void;
+  onOpenSettings: () => void;
   children: ReactNode;
 }
 
@@ -12,8 +11,9 @@ interface Props {
  * 桌面应用风格的窗口框架
  * - 自定义标题栏（traffic light 窗口控件接 window.yoomclaw）
  * - 圆角阴影边框
+ * - 标题栏右侧设置按钮 -> 打开外观设置面板
  */
-export default function WindowFrame({ theme, onToggleTheme, children }: Props) {
+export default function WindowFrame({ onOpenSettings, children }: Props) {
   const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
 
   return (
@@ -45,10 +45,10 @@ export default function WindowFrame({ theme, onToggleTheme, children }: Props) {
         <div className="title-actions">
           <button
             className="title-btn"
-            onClick={onToggleTheme}
-            title={theme === "dark" ? "切换到浅色" : "切换到深色"}
+            onClick={onOpenSettings}
+            title="外观设置"
           >
-            {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+            <SettingsIcon size={16} />
           </button>
         </div>
       </div>
@@ -61,15 +61,15 @@ export default function WindowFrame({ theme, onToggleTheme, children }: Props) {
           height: 100vh;
           width: 100vw;
           overflow: hidden;
-          background: var(--bg-primary);
+          background: var(--bg);
         }
         .title-bar {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          height: 36px;
+          height: 38px;
           padding: 0 12px;
-          background: var(--bg-titlebar);
+          background: var(--bg-panel);
           border-bottom: 1px solid var(--border);
           -webkit-app-region: drag;
           user-select: none;
@@ -89,10 +89,18 @@ export default function WindowFrame({ theme, onToggleTheme, children }: Props) {
           cursor: pointer;
           transition: filter 0.15s;
         }
-        .light:hover { filter: brightness(1.2); }
-        .light.close { background: #ff5f57; }
-        .light.minimize { background: #febc2e; }
-        .light.maximize { background: #28c840; }
+        .light:hover {
+          filter: brightness(1.2);
+        }
+        .light.close {
+          background: var(--tl-close);
+        }
+        .light.minimize {
+          background: var(--tl-min);
+        }
+        .light.maximize {
+          background: var(--tl-max);
+        }
         .title-text {
           position: absolute;
           left: 50%;
@@ -106,7 +114,7 @@ export default function WindowFrame({ theme, onToggleTheme, children }: Props) {
           pointer-events: none;
         }
         .title-logo {
-          color: var(--accent);
+          color: var(--primary);
           display: flex;
         }
         .title-actions {
@@ -115,7 +123,7 @@ export default function WindowFrame({ theme, onToggleTheme, children }: Props) {
           -webkit-app-region: no-drag;
         }
         .title-btn {
-          padding: 4px 8px;
+          padding: 5px 8px;
           font-size: 14px;
           border-radius: 6px;
           color: var(--text-secondary);
@@ -124,7 +132,8 @@ export default function WindowFrame({ theme, onToggleTheme, children }: Props) {
           justify-content: center;
         }
         .title-btn:hover {
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
+          color: var(--text);
         }
         .window-body {
           flex: 1;

@@ -42,54 +42,54 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
   const canSend = text.trim() && !disabled && !streaming;
 
   return (
-    <div className="compose-bar">
-      <div className="compose-inner">
-        <textarea
-          ref={textareaRef}
-          className="compose-input"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onInput={handleInput}
-          placeholder={
-            disabled
-              ? "请先选择或新建对话..."
-              : "给 YoomClaw 发送消息 · Enter 发送 · Shift+Enter 换行"
-          }
-          rows={1}
-          disabled={disabled}
-        />
-        {streaming ? (
-          <button className="stop-btn" onClick={onStop} title="停止生成">
-            <StopIcon size={16} />
-          </button>
-        ) : (
+      <div className="compose-bar">
+        <div className="compose-inner">
+          <textarea
+            ref={textareaRef}
+            className="compose-input"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onInput={handleInput}
+            placeholder={
+              disabled
+                ? "请先选择或新建对话..."
+                : "给 YoomClaw 发送消息 · Enter 发送 · Shift+Enter 换行"
+            }
+            rows={1}
+            disabled={disabled}
+          />
+          {streaming ? (
+            <button className="stop-btn" onClick={onStop} title="停止生成">
+              <StopIcon size={16} />
+            </button>
+          ) : (
+            <button
+              className="send-btn"
+              onClick={handleSubmit}
+              disabled={!canSend}
+              title="发送 (Enter)"
+            >
+              <SendIcon size={16} />
+            </button>
+          )}
+        </div>
+        <div className="compose-footer">
           <button
-            className="send-btn"
-            onClick={handleSubmit}
-            disabled={!canSend}
-            title="发送 (Enter)"
+            type="button"
+            className={`mode-toggle ${confirmMode}`}
+            onClick={onToggleConfirmMode}
+            title="切换工具执行确认模式：无需确认时写/执行类工具自动放行"
           >
-            <SendIcon size={16} />
+            {confirmMode === "no-confirm" ? "无需确认" : "需确认"}
           </button>
-        )}
-      </div>
-      <div className="compose-footer">
-        <button
-          type="button"
-          className={`mode-toggle ${confirmMode}`}
-          onClick={onToggleConfirmMode}
-          title="切换工具执行确认模式：无需确认时写/执行类工具自动放行"
-        >
-          {confirmMode === "no-confirm" ? "无需确认" : "需确认"}
-        </button>
-        <span className="footer-note">YoomClaw 可能产生不准确的信息 · 请验证重要细节</span>
-      </div>
+          <span className="footer-note">YoomClaw 可能产生不准确的信息 · 请验证重要细节</span>
+        </div>
 
-      <style jsx>{`
+        <style jsx>{`
         .compose-bar {
           border-top: 1px solid var(--border);
-          background: var(--bg-secondary);
+          background: var(--bg-panel);
           padding: 10px 20px 6px;
           flex-shrink: 0;
         }
@@ -99,20 +99,21 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
           display: flex;
           gap: 8px;
           align-items: flex-end;
-          background: var(--bg-input);
+          background: var(--composer-bg);
           border-radius: 14px;
           padding: 8px 8px 8px 14px;
-          border: 1px solid var(--border);
-          transition: border-color 0.15s;
+          border: 1px solid var(--composer-border);
+          transition: border-color 0.15s, box-shadow 0.15s;
         }
         .compose-inner:focus-within {
-          border-color: var(--accent);
+          border-color: var(--composer-focus-border);
+          box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-focus-border) 18%, transparent);
         }
         .compose-input {
           flex: 1;
           border: none;
           background: transparent;
-          color: var(--text-primary);
+          color: var(--text);
           font-family: inherit;
           font-size: 14.5px;
           line-height: 1.5;
@@ -132,25 +133,26 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
           align-items: center;
           justify-content: center;
           flex-shrink: 0;
-          color: white;
-          transition: background 0.15s;
+          transition: background 0.15s, filter 0.15s;
         }
         .send-btn {
-          background: var(--accent);
+          background: var(--send-bg);
+          color: var(--send-fg);
         }
         .send-btn:hover:not(:disabled) {
-          background: var(--accent-hover);
+          background: var(--send-bg-hover);
         }
         .send-btn:disabled {
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
           color: var(--text-muted);
           cursor: not-allowed;
         }
         .stop-btn {
-          background: #ef4444;
+          background: var(--error);
+          color: var(--on-error);
         }
         .stop-btn:hover {
-          background: #dc2626;
+          filter: brightness(1.08);
         }
         .compose-footer {
           max-width: 860px;
@@ -168,18 +170,18 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
           padding: 2px 10px;
           border-radius: 999px;
           border: 1px solid var(--border);
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
           color: var(--text-secondary);
           cursor: pointer;
           transition: all 0.15s;
         }
         .mode-toggle:hover {
-          border-color: var(--accent);
+          border-color: var(--border-active);
         }
         .mode-toggle.no-confirm {
-          background: rgba(63, 185, 80, 0.18);
-          border-color: #3fb950;
-          color: #3fb950;
+          background: color-mix(in srgb, var(--success) 18%, transparent);
+          border-color: var(--success);
+          color: var(--success);
         }
         .footer-note {
           color: var(--text-muted);

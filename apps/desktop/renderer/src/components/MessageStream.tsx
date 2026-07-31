@@ -5,7 +5,6 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
-import "highlight.js/styles/github-dark.css";
 import SpiralLogo from "./SpiralLogo";
 import { UserIcon, WrenchIcon } from "./icons";
 
@@ -122,10 +121,10 @@ function MessageRow({ message }: { message: ChatMessage }) {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
           border-radius: 50%;
           flex-shrink: 0;
-          color: var(--accent);
+          color: var(--primary);
         }
         .row.user .avatar {
           color: var(--text-secondary);
@@ -134,11 +133,12 @@ function MessageRow({ message }: { message: ChatMessage }) {
           max-width: calc(100% - 54px);
           padding: 10px 14px;
           border-radius: 14px;
-          background: var(--assistant-bubble);
+          background: var(--assistant-bubble-bg);
+          border: 1px solid var(--assistant-bubble-border);
         }
         .row.user .bubble {
-          background: var(--user-bubble);
-          color: white;
+          background: var(--user-bubble-bg);
+          color: var(--user-bubble-fg);
         }
         .role {
           font-size: 11px;
@@ -147,7 +147,7 @@ function MessageRow({ message }: { message: ChatMessage }) {
           letter-spacing: 0.3px;
         }
         .row.user .role {
-          color: rgba(255, 255, 255, 0.7);
+          color: color-mix(in srgb, var(--user-bubble-fg) 72%, transparent);
         }
         .content {
           font-size: 14.5px;
@@ -198,7 +198,7 @@ function MessageRow({ message }: { message: ChatMessage }) {
           padding: 6px 12px;
         }
         .content :global(blockquote) {
-          border-left: 3px solid var(--accent);
+          border-left: 3px solid var(--primary);
           padding-left: 12px;
           color: var(--text-secondary);
           margin: 8px 0;
@@ -279,16 +279,17 @@ function LiveRow({ live }: { live: LiveAssistant }) {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
           border-radius: 50%;
           flex-shrink: 0;
-          color: var(--accent);
+          color: var(--primary);
         }
         .bubble {
           max-width: calc(100% - 54px);
           padding: 10px 14px;
           border-radius: 14px;
-          background: var(--assistant-bubble);
+          background: var(--assistant-bubble-bg);
+          border: 1px solid var(--assistant-bubble-border);
         }
         .progress {
           margin-bottom: 10px;
@@ -308,7 +309,7 @@ function LiveRow({ live }: { live: LiveAssistant }) {
         .spinner {
           width: 10px;
           height: 10px;
-          border: 2px solid var(--accent);
+          border: 2px solid var(--primary);
           border-top-color: transparent;
           border-radius: 50%;
           display: inline-block;
@@ -321,13 +322,13 @@ function LiveRow({ live }: { live: LiveAssistant }) {
         }
         .progress-track {
           height: 4px;
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
           border-radius: 2px;
           overflow: hidden;
         }
         .progress-fill {
           height: 100%;
-          background: var(--accent);
+          background: var(--primary);
           transition: width 0.3s ease;
         }
         .tools {
@@ -400,16 +401,16 @@ function ToolCardView({ card }: { card: ToolCard }) {
           border: 1px solid var(--border);
           border-radius: 10px;
           padding: 8px 10px;
-          background: var(--bg-secondary);
+          background: var(--tool-call-bg);
         }
         .tool-card.pending {
-          border-color: #e0a800;
+          border-color: var(--status-attention);
         }
         .tool-card.running {
-          border-color: var(--accent);
+          border-color: var(--status-running);
         }
         .tool-card.error {
-          border-color: #e5484d;
+          border-color: var(--status-unavailable);
         }
         .tool-head {
           display: flex;
@@ -430,20 +431,20 @@ function ToolCardView({ card }: { card: ToolCard }) {
           font-size: 11px;
           padding: 1px 7px;
           border-radius: 10px;
-          background: var(--bg-tertiary);
+          background: var(--bg-element);
           color: var(--text-muted);
         }
         .tool-status.pending {
-          background: #4a3a00;
-          color: #ffd35c;
+          background: color-mix(in srgb, var(--status-attention) 22%, transparent);
+          color: var(--status-attention);
         }
         .tool-status.running {
-          background: #0b3a52;
-          color: #6cd0ff;
+          background: color-mix(in srgb, var(--status-running) 22%, transparent);
+          color: var(--status-running);
         }
         .tool-status.error {
-          background: #4a1416;
-          color: #ff8a8e;
+          background: color-mix(in srgb, var(--status-unavailable) 22%, transparent);
+          color: var(--status-unavailable);
         }
         .tool-args,
         .tool-result {
@@ -457,7 +458,7 @@ function ToolCardView({ card }: { card: ToolCard }) {
           word-break: break-word;
         }
         .tool-result.err {
-          color: #ff8a8e;
+          color: var(--status-unavailable);
         }
         .tool-meta {
           margin-top: 4px;
