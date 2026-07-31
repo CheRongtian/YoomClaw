@@ -1,0 +1,105 @@
+:root {
+  /* 深色主题 - 默认 */
+  --bg-primary: #1a1b1e;
+  --bg-secondary: #232428;
+  --bg-sidebar: #1f2024;
+  --bg-tertiary: #2c2d33;
+  --bg-input: #2a2b31;
+  --bg-titlebar: #18191c;
+  --text-primary: #e8eaed;
+  --text-secondary: #a8abb5;
+  --text-muted: #6b6e78;
+  --accent: #ff6b35;
+  --accent-hover: #e85a2b;
+  --border: #34363d;
+  --user-bubble: #2563eb;
+  --assistant-bubble: #2c2d33;
+  --code-bg: #18191c;
+}
+
+[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f7f8;
+  --bg-sidebar: #fafafa;
+  --bg-tertiary: #ececf1;
+  --bg-input: #ffffff;
+  --bg-titlebar: #f3f3f4;
+  --text-primary: #1a1a1a;
+  --text-secondary: #4a4a4a;
+  --text-muted: #8e8e8e;
+  --accent: #ff6b35;
+  --accent-hover: #e85a2b;
+  --border: #e5e5e5;
+  --user-bubble: #2563eb;
+  --assistant-bubble: #f0f0f0;
+  --code-bg: #f7f7f8;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Helvetica Neue",
+    Helvetica,
+    Arial,
+    sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+
+button:hover { background: var(--bg-tertiary); }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre {
+  font-family:
+    "JetBrains Mono",
+    "Fira Code",
+    "Cascadia Code",
+    "SF Mono",
+    Consolas,
+    Monaco,
+    monospace;
+  font-size: 13.5px;
+}
+
+.katex { font-size: 1.05em; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border); }

@@ -1,0 +1,25 @@
+{
+  "name": "@yoomclaw/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "claw": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@yoomclaw/gateway": "workspace:*",
+    "@yoomclaw/protocol": "workspace:*",
+    "@yoomclaw/agent-core": "workspace:*",
+    "@yoomclaw/llm-provider": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

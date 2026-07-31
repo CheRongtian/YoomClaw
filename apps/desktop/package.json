@@ -1,0 +1,15 @@
+{
+  "name": "@yoomclaw/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "YoomClaw desktop client - Electron app",
+  "main": "src/main.cjs",
+  "scripts": {
+    "dev": "node start.cjs",
+    "start": "node start.cjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

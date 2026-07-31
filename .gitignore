@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.turbo/
+*.log
+.claw-data/
+.env
+.env.local
+.env.*.local
+.DS_Store
+Thumbs.db
+coverage/
+.next/
+out/
+
+# 本地测试脚本含明文凭据 / 错误日志，勿提交
+test-jimo.mjs
+test-streaming.mjs
+*.err
+
+# 智能体工作记忆（本地，非项目源码）
+.workbuddy/

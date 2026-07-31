@@ -1,0 +1,27 @@
+{
+  "name": "@yoomclaw/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": {
+    "claw-gateway": "./src/bin.ts"
+  },
+  "scripts": {
+    "dev": "node --env-file=../../.env node_modules/tsx/dist/cli.mjs src/bin.ts",
+    "start": "node --env-file=../../.env node_modules/tsx/dist/cli.mjs src/bin.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@yoomclaw/protocol": "workspace:*",
+    "@yoomclaw/agent-core": "workspace:*",
+    "@yoomclaw/llm-provider": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

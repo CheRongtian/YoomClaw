@@ -1,0 +1,28 @@
+{
+  "name": "yoomclaw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A mini OpenClaw-like personal AI agent framework",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n vite,electron -c blue,green \"pnpm --filter @yoomclaw/desktop-renderer dev\" \"pnpm --filter @yoomclaw/desktop dev\"",
+    "dev:gateway": "pnpm --filter @yoomclaw/gateway dev",
+    "dev:desktop": "pnpm --filter @yoomclaw/desktop dev",
+    "dev:all": "pnpm dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter @yoomclaw/gateway start",
+    "cli": "pnpm --filter @yoomclaw/cli start",
+    "lint": "pnpm -r --if-present lint",
+    "clean": "pnpm -r exec rm -rf dist node_modules .turbo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "concurrently": "^9.1.0",
+    "electron": "^33.4.11",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
