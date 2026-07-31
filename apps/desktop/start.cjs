@@ -9,7 +9,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-const root = path.resolve(__dirname, "..", ".."); // repo root (claw/)
+const root = path.resolve(__dirname, "..", ".."); // repo root (YoomClaw/)
 const appDir = __dirname; // apps/desktop
 const exeName = process.platform === "win32" ? "electron.exe" : "electron";
 
@@ -39,7 +39,7 @@ if (!fs.existsSync(exe)) {
   };
   const found = walk(base);
   if (!found) {
-    console.error("[claw] electron binary not found under", base);
+    console.error("[YoomClaw] electron binary not found under", base);
     process.exit(1);
   }
   exe = found;
@@ -53,7 +53,7 @@ const child = spawn(exe, args, { cwd: appDir, stdio: "inherit", windowsHide: fal
 
 child.on("close", (code, signal) => {
   if (code === null) {
-    console.error("[claw] electron exited with signal", signal);
+    console.error("[YoomClaw] electron exited with signal", signal);
     process.exit(1);
   }
   process.exit(code);

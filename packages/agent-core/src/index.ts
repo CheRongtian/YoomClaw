@@ -159,16 +159,29 @@ export class Agent {
    */
   async *run(
     sessionId: string,
-    userText: string,
+    input: string | ChatMessage,
     options?: RunOptions,
   ): AsyncIterable<AgentEvent> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
+    const userMessage: ChatMessage =
+      typeof input === "string"
+        ? { role: "user", content: input }
+        : { role: input.role ?? "user", content: input.content };
+
     // 仅在会话里存用户提问 + 最终回答（中间轮的工具 JSON / 结果由事件流呈现，
     // 不进 session.messages —— 积墨服务端按 sessionId 维护上下文，客户端历史无效）。
-    this.sessions.appendMessage(sessionId, { role: "user", content: userText });
-    this.logger.info("run", `session=${sessionId} user="${truncate(userText, 120)}"`);
+    this.sessions.appendMessage(sessionId, userMessage);
+    this.logger.info(
+      "run",
+      `session=${sessionId} user="${truncate(
+        typeof userMessage.content === "string"
+          ? userMessage.content
+          : "[多模态消息]",
+        120,
+      )}"`,
+    );
 
     const defs = this.tools.map((t) => t.definition);
     const knownToolNames = new Set(defs.map((d) => d.name));
@@ -203,7 +216,13 @@ export class Agent {
         //  - 后续轮：工具结果回填
         const roundMessage: ChatMessage =
           round === 1
-            ? { role: "user", content: rulePrompt + userText }
+            ? {
+                role: "user",
+                content:
+                  typeof userMessage.content === "string"
+                    ? rulePrompt + userMessage.content
+                    : [{ type: "text", text: rulePrompt }, ...userMessage.content],
+              }
             : {
                 role: "user",
                 content: buildToolResultPrompt(

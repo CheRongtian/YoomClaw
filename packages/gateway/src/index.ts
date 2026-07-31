@@ -361,7 +361,7 @@ export class Gateway {
         break;
       }
       case "chat": {
-        const text = textOf(msg.message.content);
+        const message = msg.message;
         const ac = new AbortController();
         const onClose = () => ac.abort();
         ws.once("close", onClose);
@@ -378,7 +378,7 @@ export class Gateway {
           });
 
         try {
-          for await (const ev of this.agent.run(msg.sessionId, text, {
+          for await (const ev of this.agent.run(msg.sessionId, message, {
             signal: ac.signal,
             confirm,
           })) {

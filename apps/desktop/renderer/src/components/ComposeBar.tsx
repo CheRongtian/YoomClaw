@@ -1,24 +1,46 @@
-import { useState, useRef, KeyboardEvent } from "react";
-import { SendIcon, StopIcon } from "./icons";
+import {
+  useState,
+  useRef,
+  useEffect,
+  KeyboardEvent,
+  ChangeEvent,
+} from "react";
+import { SendIcon, StopIcon, PlusIcon } from "./icons";
 
 interface Props {
-  onSend: (text: string) => void;
+  onSend: (text: string, files: File[]) => void;
   onStop: () => void;
   disabled?: boolean;
   streaming: boolean;
-  confirmMode: "confirm" | "no-confirm";
-  onToggleConfirmMode: () => void;
 }
 
-export default function ComposeBar({ onSend, onStop, disabled, streaming, confirmMode, onToggleConfirmMode }: Props) {
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+export default function ComposeBar({ onSend, onStop, disabled, streaming }: Props) {
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const prevStreaming = useRef(streaming);
+
+  // 回复结束后自动聚焦输入框，用户无需再次点击即可继续打字
+  useEffect(() => {
+    if (prevStreaming.current && !streaming) {
+      textareaRef.current?.focus();
+    }
+    prevStreaming.current = streaming;
+  }, [streaming]);
 
   const handleSubmit = () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled || streaming) return;
-    onSend(trimmed);
+    if ((!trimmed && attachments.length === 0) || disabled || streaming) return;
+    onSend(trimmed, attachments);
     setText("");
+    setAttachments([]);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -39,26 +61,53 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
     ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
   };
 
-  const canSend = text.trim() && !disabled && !streaming;
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length) setAttachments((prev) => [...prev, ...files]);
+    e.target.value = "";
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const canSend = (text.trim() || attachments.length > 0) && !disabled && !streaming;
 
   return (
-      <div className="compose-bar">
-        <div className="compose-inner">
-          <textarea
-            ref={textareaRef}
-            className="compose-input"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onInput={handleInput}
-            placeholder={
-              disabled
-                ? "请先选择或新建对话..."
-                : "给 YoomClaw 发送消息 · Enter 发送 · Shift+Enter 换行"
-            }
-            rows={1}
-            disabled={disabled}
-          />
+    <div className="compose-bar">
+      <div className="compose-inner">
+        <button
+          type="button"
+          className="attach-btn"
+          onClick={() => fileInputRef.current?.click()}
+          title="添加附件"
+          aria-label="添加附件"
+        >
+          <PlusIcon size={18} />
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={handleFileChange}
+        />
+        <textarea
+          ref={textareaRef}
+          className="compose-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onInput={handleInput}
+          placeholder={
+            disabled
+              ? "请先选择或新建对话..."
+              : "给 YoomClaw 发送消息 · Enter 发送 · Shift+Enter 换行"
+          }
+          rows={1}
+          disabled={disabled}
+        />
+        <div className="compose-actions">
           {streaming ? (
             <button className="stop-btn" onClick={onStop} title="停止生成">
               <StopIcon size={16} />
@@ -74,19 +123,35 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
             </button>
           )}
         </div>
-        <div className="compose-footer">
-          <button
-            type="button"
-            className={`mode-toggle ${confirmMode}`}
-            onClick={onToggleConfirmMode}
-            title="切换工具执行确认模式：无需确认时写/执行类工具自动放行"
-          >
-            {confirmMode === "no-confirm" ? "无需确认" : "需确认"}
-          </button>
-          <span className="footer-note">YoomClaw 可能产生不准确的信息 · 请验证重要细节</span>
-        </div>
+      </div>
 
-        <style jsx>{`
+      {attachments.length > 0 && (
+        <div className="compose-attachments">
+          {attachments.map((f, i) => (
+            <span className="attach-chip" key={`${f.name}-${i}`}>
+              <span className="attach-name">{f.name}</span>
+              <span className="attach-size">{formatSize(f.size)}</span>
+              <button
+                type="button"
+                className="attach-remove"
+                onClick={() => removeAttachment(i)}
+                aria-label={`移除 ${f.name}`}
+                title="移除"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="compose-footer">
+        <span className="footer-note">
+          YoomClaw 可能产生不准确的信息 · 请验证重要细节
+        </span>
+      </div>
+
+      <style jsx>{`
         .compose-bar {
           border-top: 1px solid var(--border);
           background: var(--bg-panel);
@@ -101,13 +166,31 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
           align-items: flex-end;
           background: var(--composer-bg);
           border-radius: 14px;
-          padding: 8px 8px 8px 14px;
+          padding: 8px 8px 8px 8px;
           border: 1px solid var(--composer-border);
           transition: border-color 0.15s, box-shadow 0.15s;
         }
         .compose-inner:focus-within {
           border-color: var(--composer-focus-border);
           box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-focus-border) 18%, transparent);
+        }
+        .attach-btn {
+          width: 34px;
+          height: 34px;
+          border-radius: 8px;
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid var(--border);
+          background: var(--bg-element);
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+        .attach-btn:hover {
+          border-color: var(--border-active);
+          color: var(--text);
         }
         .compose-input {
           flex: 1;
@@ -135,6 +218,13 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
           flex-shrink: 0;
           transition: background 0.15s, filter 0.15s;
         }
+        .compose-actions {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 8px;
+          flex-shrink: 0;
+        }
         .send-btn {
           background: var(--send-bg);
           color: var(--send-fg);
@@ -154,6 +244,54 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
         .stop-btn:hover {
           filter: brightness(1.08);
         }
+        .compose-attachments {
+          max-width: 860px;
+          margin: 6px auto 0;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .attach-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          max-width: 240px;
+          padding: 5px 8px 5px 12px;
+          border-radius: 999px;
+          background: var(--bg-element);
+          border: 1px solid var(--border);
+        }
+        .attach-name {
+          font-size: 12px;
+          color: var(--text);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 150px;
+        }
+        .attach-size {
+          font-size: 10.5px;
+          color: var(--text-muted);
+        }
+        .attach-remove {
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          border: none;
+          background: transparent;
+          color: var(--text-muted);
+          font-size: 15px;
+          line-height: 1;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.15s;
+        }
+        .attach-remove:hover {
+          background: var(--bg-panel);
+          color: var(--text);
+        }
         .compose-footer {
           max-width: 860px;
           margin: 4px auto 0;
@@ -164,24 +302,6 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming, confir
           align-items: center;
           justify-content: center;
           gap: 10px;
-        }
-        .mode-toggle {
-          font-size: 11px;
-          padding: 2px 10px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          background: var(--bg-element);
-          color: var(--text-secondary);
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .mode-toggle:hover {
-          border-color: var(--border-active);
-        }
-        .mode-toggle.no-confirm {
-          background: color-mix(in srgb, var(--success) 18%, transparent);
-          border-color: var(--success);
-          color: var(--success);
         }
         .footer-note {
           color: var(--text-muted);

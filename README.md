@@ -98,7 +98,7 @@ pnpm start
 ## Project Structure
 
 ```
-claw/
+YoomClaw/
 ├── packages/
 │   ├── protocol/         # Shared TypeScript types
 │   ├── llm-provider/     # LLM adapter (JimoAI SSE format)

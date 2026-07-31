@@ -39,7 +39,7 @@ let isQuitting = false;
 let hasShownCloseHint = false;
 let gatewayChild = null;
 
-// 仓库根目录（apps/desktop/src -> claw/）
+// 仓库根目录（apps/desktop/src -> YoomClaw/）
 const ROOT = nodePath.resolve(__dirname, "..", "..", "..");
 
 // 开发模式：未打包时视为 dev（Electron 从源码启动时 isPackaged=false）
