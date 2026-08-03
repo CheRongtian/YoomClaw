@@ -10,14 +10,17 @@
   },
   "scripts": {
     "build": "tsc",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "@yoomclaw/protocol": "workspace:*",
-    "@yoomclaw/llm-provider": "workspace:*"
+    "@yoomclaw/llm-provider": "workspace:*",
+    "playwright-core": "^1.52.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
 }

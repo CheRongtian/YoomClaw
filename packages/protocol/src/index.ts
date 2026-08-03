@@ -52,8 +52,31 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  /** Persisted session schema version. Older sessions may omit this field. */
+  schemaVersion?: number;
+  /** Workspace used by the agent for this session. */
+  workspace?: string;
+  /** Stable provider-side session id. */
+  providerSessionId?: string;
+  /** Persisted execution records for resumable UI state. */
+  runs?: SessionRun[];
   /** Optional metadata. */
   meta?: Record<string, unknown>;
+}
+
+export type SessionRunStatus =
+  | "running"
+  | "completed"
+  | "interrupted"
+  | "failed";
+
+export interface SessionRun {
+  runId: string;
+  status: SessionRunStatus;
+  startedAt: number;
+  endedAt?: number;
+  events: AgentEvent[];
+  error?: string;
 }
 
 // ===== Request/Response (compatible with JimoAI API format) =====
@@ -108,7 +131,16 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: JSONSchema;
+  /** Hermes-style logical toolset. */
+  toolset?: ToolsetId;
 }
+
+export type ToolsetId =
+  | "coding"
+  | "memory"
+  | "skills"
+  | "browser"
+  | "vision";
 
 export interface JSONSchema {
   type?: string;
@@ -144,6 +176,7 @@ export type ToolRisk = "safe" | "confirm";
  * UI 需要区分这些阶段才能渲染出工具卡片和进度。
  */
 export type AgentEvent =
+  | { type: "run"; runId: string; status: SessionRunStatus }
   /** 模型正文增量 */
   | { type: "delta"; text: string }
   /** 上游节点进度（积墨 SSE 的 event:event） */
@@ -168,6 +201,29 @@ export type AgentEvent =
       reason: string;
     }
   /** 本轮收敛，附最终完整文本 */
+  | {
+      type: "memory";
+      action: "saved" | "updated" | "deleted" | "skipped";
+      store: "memory" | "user";
+      detail?: string;
+    }
+  | {
+      type: "skill_draft";
+      skillId: string;
+      name: string;
+      status: "created" | "applied" | "rejected";
+    }
+  | {
+      type: "browser";
+      status: "connected" | "disconnected" | "error";
+      url?: string;
+      message?: string;
+    }
+  | {
+      type: "vision";
+      status: "started" | "completed" | "error";
+      message?: string;
+    }
   | { type: "final"; text: string }
   /** 出错 */
   | { type: "error"; message: string };
@@ -182,9 +238,26 @@ export interface ToolDecision {
 
 export type GatewayMessage =
   | { type: "chat"; sessionId: string; message: ChatMessage }
+  | {
+      type: "chat.start";
+      sessionId: string;
+      runId: string;
+      message: ChatMessage;
+    }
+  | { type: "chat.cancel"; sessionId: string; runId: string }
   | { type: "chat.stream"; sessionId: string; chunk: ChatCompletionChunk }
-  | { type: "chat.event"; sessionId: string; event: AgentEvent }
-  | { type: "chat.end"; sessionId: string }
+  | {
+      type: "chat.event";
+      sessionId: string;
+      event: AgentEvent;
+      runId?: string;
+    }
+  | {
+      type: "chat.end";
+      sessionId: string;
+      runId?: string;
+      status?: SessionRunStatus;
+    }
   | { type: "tool.decision"; sessionId: string; decision: ToolDecision }
   | { type: "setConfirmMode"; mode: "confirm" | "no-confirm" }
   | { type: "session.list" }
@@ -219,4 +292,43 @@ export interface AgentConfig {
   temperature?: number;
   /** Enabled tool names. */
   enabledTools?: string[];
+  /** Enabled Hermes-style toolsets. */
+  toolsets?: ToolsetId[];
+  /** Prompt-driven agent engine. */
+  mode?: "legacy" | "hermes";
+  /** Workspace execution policy. */
+  safetyMode?: "workspace-auto" | "confirm";
+  /** Maximum ReAct tool rounds. */
+  maxToolRounds?: number;
+  /** Repeated identical calls before stopping. */
+  spinThreshold?: number;
+}
+
+// ===== Hermes-style runtime/config types =====
+
+export interface RuntimeConfig {
+  mode: "legacy" | "hermes";
+  workspace: string;
+  dataDir: string;
+  toolsets: ToolsetId[];
+  safetyMode: "workspace-auto" | "confirm";
+  browserCdpUrl?: string;
+  visionEnabled: boolean;
+}
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  status: "active" | "draft";
+  source: "global" | "project";
+}
+
+export interface BrowserStatus {
+  connected: boolean;
+  cdpUrl: string;
+  pageUrl?: string;
+  title?: string;
+  message?: string;
 }

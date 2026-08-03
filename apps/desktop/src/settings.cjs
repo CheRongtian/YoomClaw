@@ -27,6 +27,8 @@ const DEFAULTS = Object.freeze({
   notifyOnComplete: true,
   /** 界面缩放倍率 */
   zoomFactor: 1,
+  /** 当前 Agent 项目工作区 */
+  workspace: "",
 });
 
 const ENUMS = {
@@ -61,6 +63,8 @@ function sanitize(raw) {
       if (typeof value === "number" && Number.isFinite(value)) {
         out[key] = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
       }
+    } else if (typeof fallback === "string") {
+      if (typeof value === "string") out[key] = value;
     }
   }
   return out;

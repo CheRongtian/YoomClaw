@@ -3,15 +3,17 @@ import { CloseIcon, SlidersIcon, PaletteIcon, InfoIcon } from "./icons";
 import GeneralSettings from "./settings/GeneralSettings";
 import AppearanceSettings from "./settings/AppearanceSettings";
 import AboutSettings from "./settings/AboutSettings";
+import AgentSettings from "./settings/AgentSettings";
 
 interface Props {
   open: boolean;
   onClose: () => void;
 }
 
-type TabId = "general" | "appearance" | "about";
+type TabId = "agent" | "general" | "appearance" | "about";
 
 const TABS: { id: TabId; label: string; Icon: typeof SlidersIcon }[] = [
+  { id: "agent", label: "Agent", Icon: SlidersIcon },
   { id: "general", label: "通用", Icon: SlidersIcon },
   { id: "appearance", label: "外观", Icon: PaletteIcon },
   { id: "about", label: "关于", Icon: InfoIcon },
@@ -19,7 +21,7 @@ const TABS: { id: TabId; label: string; Icon: typeof SlidersIcon }[] = [
 
 /** 设置对话框：左侧分类导航 + 右侧内容，Esc 关闭 */
 export default function SettingsPanel({ open, onClose }: Props) {
-  const [tab, setTab] = useState<TabId>("general");
+  const [tab, setTab] = useState<TabId>("agent");
 
   useEffect(() => {
     if (!open) return;
@@ -65,6 +67,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
           </header>
 
           <div className="sp-body">
+            {tab === "agent" && <AgentSettings />}
             {tab === "general" && <GeneralSettings />}
             {tab === "appearance" && <AppearanceSettings />}
             {tab === "about" && <AboutSettings />}

@@ -77,6 +77,14 @@ export function resolveInWorkspace(
     };
   }
 
+  if (isSensitivePath(resolved)) {
+    return {
+      ok: false,
+      resolved: "",
+      reason: "出于安全原因，禁止读取或修改凭证、环境变量和私钥文件",
+    };
+  }
+
   for (const bad of forbiddenRoots()) {
     if (resCmp === bad) {
       return {
@@ -103,13 +111,15 @@ const SAFE_COMMANDS = new Set([
 
 /** git 里也有危险子命令，单独挡掉。 */
 const DANGEROUS_GIT_SUBCOMMANDS = new Set([
-  "push", "reset", "clean", "rebase", "filter-branch",
+  "push", "reset", "clean", "rebase", "filter-branch", "commit", "merge",
 ]);
 
 /**
  * 明确的破坏性模式，命中即拒绝执行（连确认都不给）。
  */
 const HARD_BLOCKED_PATTERNS: Array<{ re: RegExp; why: string }> = [
+  { re: /(?:^|[;&|])\s*(?:cd|pushd|set-location)\s+(?:\.\.|[A-Za-z]:[\\/]|[\\/])/i, why: "命令试图离开工作区" },
+  { re: /(?:^|[\s"'=])\.\.[\\/]/, why: "命令包含工作区路径穿越" },
   { re: /\brm\s+(-[a-z]*[rf][a-z]*\s+)+\/(?:\s|$)/i, why: "递归删除根目录" },
   { re: /\brm\s+-[a-z]*[rf]/i, why: "递归/强制删除" },
   { re: /\bdel\s+\/[sq]/i, why: "Windows 递归删除" },
@@ -120,11 +130,15 @@ const HARD_BLOCKED_PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /:\(\)\s*\{.*\}\s*;\s*:/, why: "fork 炸弹" },
   { re: /\bshutdown\b|\breboot\b/i, why: "关机/重启" },
   { re: /\bchmod\s+-R\s+777\s+\//i, why: "递归改根目录权限" },
-  { re: /\bcurl\b[^|]*\|\s*(ba)?sh/i, why: "下载并直接执行脚本" },
-  { re: /\bwget\b[^|]*\|\s*(ba)?sh/i, why: "下载并直接执行脚本" },
+  { re: /\bcurl\b[^|]*\|\s*(ba)?sh|\bcurl\b[^|]*\|\s*(?:powershell|pwsh)/i, why: "下载并直接执行脚本" },
+  { re: /\bwget\b[^|]*\|\s*(ba)?sh|\bwget\b[^|]*\|\s*(?:powershell|pwsh)/i, why: "下载并直接执行脚本" },
   { re: /\bsudo\b/i, why: "提权执行" },
+  { re: /\b(?:reg|reg\.exe)\s+(?:add|delete|import|load|save)\b/i, why: "修改 Windows 注册表" },
+  { re: /\b(?:runas)\b|\b(?:powershell|pwsh)\b[^\n]*\b(?:-verb\s+runas|start-process)\b/i, why: "管理员权限执行" },
   { re: /\bReg(istry)?\s+(delete|add)\b/i, why: "修改注册表" },
 ];
+
+const SENSITIVE_COMMAND_PATTERN = /(?:^|[\s\\/"'=])(?:\.env(?:\.(?!example\b)[^\s\\/"'=]*)?|\.ssh|id_(?:rsa|dsa|ecdsa|ed25519)|authorized_keys|[^\s\\/"'=]+\.(?:pem|key|p12|pfx))(?=$|[\s\\/"'=])/i;
 
 export type CommandVerdict =
   | { action: "allow"; reason: "" }
@@ -147,6 +161,10 @@ export function judgeCommand(cmd: string): CommandVerdict {
     }
   }
 
+  if (SENSITIVE_COMMAND_PATTERN.test(trimmed)) {
+    return { action: "block", reason: "命令涉及凭证、环境变量或私钥文件" };
+  }
+
   // 含管道、重定向、命令串联时，无法简单判定，一律走确认
   if (/[;&|>]|\$\(|`/.test(trimmed)) {
     return { action: "confirm", reason: "包含管道、重定向或命令串联" };
@@ -163,11 +181,26 @@ export function judgeCommand(cmd: string): CommandVerdict {
     return { action: "allow", reason: "" };
   }
 
+  if (/^(?:npm|pnpm|yarn|pip)(?:\.exe)?\s+(?:install|add|remove|uninstall|update|upgrade|publish)\b/i.test(trimmed)) {
+    return { action: "confirm", reason: "安装、移除或发布依赖会改变工作区或外部环境" };
+  }
+
   if (SAFE_COMMANDS.has(base)) {
     return { action: "allow", reason: "" };
   }
 
   return { action: "confirm", reason: `命令 "${base}" 不在只读白名单内` };
+}
+
+function isSensitivePath(value: string): boolean {
+  const segments = value.split(/[\\/]+/).map((segment) => segment.toLowerCase());
+  return segments.some((segment) =>
+    segment === ".env" ||
+    (segment.startsWith(".env.") && segment !== ".env.example") ||
+    segment === ".ssh" ||
+    /^(id_(rsa|dsa|ecdsa|ed25519)|authorized_keys)$/.test(segment) ||
+    /\.(pem|key|p12|pfx)$/.test(segment),
+  );
 }
 
 /** 截断工具结果，避免污染上下文且不可回收。 */

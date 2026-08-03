@@ -20,6 +20,7 @@ const {
   shell,
   Notification,
   ipcMain,
+  dialog,
 } = require("electron");
 const nodePath = require("node:path");
 const { spawn } = require("node:child_process");
@@ -72,13 +73,25 @@ function startGateway() {
   }
 
   const envFile = nodePath.join(ROOT, ".env");
-  const args = ["--env-file=" + envFile, tsxCli, "packages/gateway/src/bin.ts"];
+  const workspace = settingsStore.load().workspace || ROOT;
+  const dataDir = nodePath.join(app.getPath("userData"), "YoomClaw");
+  const args = [
+    ...(fs.existsSync(envFile) ? ["--env-file=" + envFile] : []),
+    tsxCli,
+    "packages/gateway/src/bin.ts",
+  ];
+  const gatewayEnv = {
+    ...process.env,
+    YOOMCLAW_WORKSPACE: workspace,
+    CLAW_WORKSPACE: workspace,
+    YOOMCLAW_DATA_DIR: dataDir,
+  };
 
   console.log("[Gateway] 启动子进程:", "node", args.join(" "));
   gatewayChild = spawn("node", args, {
     cwd: ROOT,
     stdio: "inherit",
-    env: process.env,
+    env: gatewayEnv,
     windowsHide: true,
   });
 
@@ -100,6 +113,13 @@ function stopGateway() {
     } catch {}
     gatewayChild = null;
   }
+}
+
+function restartGateway() {
+  stopGateway();
+  setTimeout(() => {
+    if (!isQuitting) startGateway();
+  }, 250);
 }
 
 function createTrayIcon() {
@@ -359,6 +379,21 @@ ipcMain.handle("settings:set", async (_evt, patch) => {
   const next = settingsStore.save(patch || {});
   applyRuntimeSettings(next);
   return next;
+});
+
+ipcMain.handle("workspace:get", async () => settingsStore.load().workspace || ROOT);
+
+ipcMain.handle("workspace:choose", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "选择 Agent 工作区",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  const workspace = result.canceled ? null : result.filePaths[0];
+  if (!workspace) return null;
+  settingsStore.save({ workspace });
+  restartGateway();
+  return workspace;
 });
 
 ipcMain.handle("app:info", async () => ({

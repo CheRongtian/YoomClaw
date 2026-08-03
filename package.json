@@ -15,6 +15,7 @@
     "start": "pnpm --filter @yoomclaw/gateway start",
     "cli": "pnpm --filter @yoomclaw/cli start",
     "lint": "pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo"
   },
   "devDependencies": {

@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld("yoomclaw", {
   // 应用设置（持久化在主进程 userData/settings.json）
   getSettings: () => ipcRenderer.invoke("settings:get"),
   updateSettings: (patch) => ipcRenderer.invoke("settings:set", patch),
+  getWorkspace: () => ipcRenderer.invoke("workspace:get"),
+  chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
 
   // 应用信息 / 数据目录
   getAppInfo: () => ipcRenderer.invoke("app:info"),

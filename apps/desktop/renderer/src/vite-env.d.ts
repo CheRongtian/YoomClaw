@@ -22,6 +22,8 @@ export interface YoomClawApi {
 
   getSettings(): Promise<AppSettings>;
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
+  getWorkspace(): Promise<string>;
+  chooseWorkspace(): Promise<string | null>;
 
   getAppInfo(): Promise<AppInfo>;
   openDataDir(): Promise<void>;

@@ -9,6 +9,7 @@ export interface AppSettings {
   alwaysOnTop: boolean;
   notifyOnComplete: boolean;
   zoomFactor: number;
+  workspace: string;
 }
 
 export interface AppInfo {

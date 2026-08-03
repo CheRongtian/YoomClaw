@@ -15,8 +15,10 @@
 
 import type {
   ChatMessage,
+  ContentPart,
   Session,
   SessionSummary,
+  SessionRun,
   AgentConfig,
   AgentEvent,
   ToolRisk,
@@ -24,22 +26,53 @@ import type {
 
 import type { LLMProvider } from "@yoomclaw/llm-provider";
 
-import { BUILTIN_TOOLS, type BuiltinTool, type ToolContext } from "./tools.js";
 import {
-  buildToolPrompt,
-  buildToolResultPrompt,
+  BUILTIN_TOOLS,
+  type BuiltinTool,
+  type ToolContext,
+  type BrowserToolController,
+} from "./tools.js";
+import {
   parseToolCall,
   callFingerprint,
+  buildToolPrompt,
   type ParsedToolCall,
 } from "./react.js";
 import { truncateResult } from "./sandbox.js";
 import path from "node:path";
 import { RunLogger, truncate, formatArgs } from "./logger.js";
+import { FileSessionRepository, type SessionRepository } from "./session-repository.js";
+import {
+  MemoryStore,
+  PromptStore,
+  SkillStore,
+  type MemoryStoreName,
+} from "./config.js";
+import { HermesPromptAssembler, type PromptAssembler, textFromMessage } from "./prompt.js";
 
 // ===== Session Store =====
 
 export class SessionStore {
   private sessions = new Map<string, Session>();
+
+  constructor(
+    private readonly repository?: SessionRepository,
+    private readonly defaultWorkspace?: string,
+  ) {
+    for (const session of repository?.load() ?? []) {
+      if (!session.workspace) session.workspace = defaultWorkspace;
+      this.sessions.set(session.id, session);
+    }
+    for (const session of this.sessions.values()) {
+      for (const run of session.runs ?? []) {
+        if (run.status === "running") {
+          run.status = "interrupted";
+          run.endedAt = Date.now();
+        }
+      }
+      this.persist(session);
+    }
+  }
 
   create(title?: string): Session {
     const id = generateId();
@@ -50,8 +83,13 @@ export class SessionStore {
       createdAt: now,
       updatedAt: now,
       messages: [],
+      schemaVersion: 2,
+      workspace: this.defaultWorkspace,
+      providerSessionId: id,
+      runs: [],
     };
     this.sessions.set(id, session);
+    this.persist(session);
     return session;
   }
 
@@ -76,11 +114,22 @@ export class SessionStore {
     if (!session) throw new Error(`Session not found: ${sessionId}`);
     session.messages.push(message);
     session.updatedAt = Date.now();
+    this.persist(session);
+    return session;
+  }
+
+  setMeta(sessionId: string, patch: Record<string, unknown>): Session {
+    const session = this.require(sessionId);
+    session.meta = { ...(session.meta ?? {}), ...patch };
+    session.updatedAt = Date.now();
+    this.persist(session);
     return session;
   }
 
   delete(id: string): boolean {
-    return this.sessions.delete(id);
+    const deleted = this.sessions.delete(id);
+    if (deleted) this.repository?.delete(id);
+    return deleted;
   }
 
   /** 导出所有会话，用于落盘持久化。 */
@@ -90,7 +139,17 @@ export class SessionStore {
 
   /** 从落盘数据恢复会话。 */
   load(sessions: Session[]): void {
-    for (const s of sessions) this.sessions.set(s.id, s);
+    for (const s of sessions) {
+      const normalized: Session = {
+        ...s,
+        schemaVersion: s.schemaVersion ?? 2,
+        workspace: s.workspace ?? this.defaultWorkspace,
+        providerSessionId: s.providerSessionId ?? s.id,
+        runs: s.runs ?? [],
+      };
+      this.sessions.set(normalized.id, normalized);
+      this.persist(normalized);
+    }
   }
 
   rename(id: string, title: string): Session | undefined {
@@ -98,7 +157,65 @@ export class SessionStore {
     if (!session) return undefined;
     session.title = title;
     session.updatedAt = Date.now();
+    this.persist(session);
     return session;
+  }
+
+  startRun(sessionId: string, runId: string): SessionRun {
+    const session = this.require(sessionId);
+    const run: SessionRun = {
+      runId,
+      status: "running",
+      startedAt: Date.now(),
+      events: [],
+    };
+    session.runs = [...(session.runs ?? []), run];
+    session.updatedAt = Date.now();
+    this.persist(session);
+    return run;
+  }
+
+  appendRunEvent(sessionId: string, runId: string, event: AgentEvent): void {
+    const session = this.require(sessionId);
+    const run = (session.runs ?? []).find((item) => item.runId === runId);
+    if (!run) return;
+    run.events.push(event);
+    session.updatedAt = Date.now();
+    this.persist(session);
+  }
+
+  finishRun(
+    sessionId: string,
+    runId: string,
+    status: "completed" | "interrupted" | "failed",
+    error?: string,
+  ): void {
+    const session = this.require(sessionId);
+    const run = (session.runs ?? []).find((item) => item.runId === runId);
+    if (!run) return;
+    run.status = status;
+    run.endedAt = Date.now();
+    if (error) run.error = error;
+    session.updatedAt = Date.now();
+    this.persist(session);
+  }
+
+  findRun(runId: string): { sessionId: string; run: SessionRun } | undefined {
+    for (const session of this.sessions.values()) {
+      const run = (session.runs ?? []).find((item) => item.runId === runId);
+      if (run) return { sessionId: session.id, run };
+    }
+    return undefined;
+  }
+
+  private require(id: string): Session {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`Session not found: ${id}`);
+    return session;
+  }
+
+  private persist(session: Session): void {
+    this.repository?.save(session);
   }
 }
 
@@ -124,6 +241,34 @@ export interface RunOptions {
    * 交互式 UI 必须传入，否则用户无法拦截写操作。
    */
   confirm?: ConfirmFn;
+  /** Stable id used by Gateway cancellation and persisted run events. */
+  runId?: string;
+}
+
+export interface VisionAnalyzer {
+  analyze(
+    message: ChatMessage,
+    sessionId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<string>;
+}
+
+export interface AgentRuntime {
+  dataDir?: string;
+  promptStore?: PromptStore;
+  memoryStore?: MemoryStore;
+  skillStore?: SkillStore;
+  browser?: BrowserToolController;
+  vision?: VisionAnalyzer;
+  promptAssembler?: PromptAssembler;
+}
+
+export interface AgentEngine {
+  run(
+    sessionId: string,
+    input: string | ChatMessage,
+    options?: RunOptions,
+  ): AsyncIterable<AgentEvent>;
 }
 
 // ===== Agent (ReAct) =====
@@ -131,9 +276,10 @@ export interface RunOptions {
 const MAX_TOOL_ROUNDS = 12;
 const SPIN_THRESHOLD = 3;
 
-export class Agent {
+export class Agent implements AgentEngine {
   readonly config: AgentConfig;
   private logger: RunLogger;
+  private readonly promptAssembler: PromptAssembler;
 
   constructor(
     config: AgentConfig,
@@ -141,9 +287,19 @@ export class Agent {
     private sessions: SessionStore,
     private tools: BuiltinTool[] = BUILTIN_TOOLS,
     private workspace: string = process.cwd(),
+    private runtime: AgentRuntime = {},
   ) {
     this.config = config;
-    this.logger = new RunLogger(path.join(workspace, ".claw-data"));
+    this.logger = new RunLogger(path.join(runtime.dataDir ?? path.join(workspace, ".claw-data"), "logs"));
+    this.promptAssembler = runtime.promptAssembler ?? new HermesPromptAssembler();
+    const dataDir = runtime.dataDir ?? path.join(workspace, ".claw-data");
+    this.runtime = {
+      ...runtime,
+      dataDir,
+      promptStore: runtime.promptStore ?? new PromptStore(workspace, dataDir),
+      memoryStore: runtime.memoryStore ?? new MemoryStore(workspace, dataDir),
+      skillStore: runtime.skillStore ?? new SkillStore(workspace, dataDir),
+    };
   }
 
   /**
@@ -162,13 +318,77 @@ export class Agent {
     input: string | ChatMessage,
     options?: RunOptions,
   ): AsyncIterable<AgentEvent> {
+    const runId = options?.runId ?? generateId();
+    this.sessions.startRun(sessionId, runId);
+    yield { type: "run", runId, status: "running" };
+
+    let status: "completed" | "interrupted" | "failed" = "completed";
+    let finalText = "";
+    try {
+      for await (const event of this.runInternal(sessionId, input, options)) {
+        this.sessions.appendRunEvent(sessionId, runId, event);
+        if (event.type === "final") finalText = event.text;
+        if (event.type === "error") {
+          status = options?.signal?.aborted ? "interrupted" : "failed";
+        }
+        yield event;
+      }
+    } catch (err) {
+      status = options?.signal?.aborted ? "interrupted" : "failed";
+      const message = err instanceof Error ? err.message : String(err);
+      const event: AgentEvent = { type: "error", message };
+      this.sessions.appendRunEvent(sessionId, runId, event);
+      yield event;
+    } finally {
+      this.sessions.finishRun(sessionId, runId, status);
+      if (status === "completed" && finalText.trim()) {
+        void this.reviewMemory(sessionId, input, finalText);
+      }
+    }
+    yield { type: "run", runId, status };
+  }
+
+  private async *runInternal(
+    sessionId: string,
+    input: string | ChatMessage,
+    options?: RunOptions,
+  ): AsyncIterable<AgentEvent> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-    const userMessage: ChatMessage =
+    let userMessage: ChatMessage =
       typeof input === "string"
         ? { role: "user", content: input }
         : { role: input.role ?? "user", content: input.content };
+
+    if (this.runtime.vision && hasImagePart(userMessage)) {
+      yield { type: "vision", status: "started" };
+      try {
+        const analysis = await this.runtime.vision.analyze(userMessage, sessionId, {
+          signal: options?.signal,
+        });
+        if (analysis.trim()) {
+          const parts: ContentPart[] = Array.isArray(userMessage.content) ? userMessage.content : [
+            { type: "text", text: textFromMessage(userMessage) },
+          ];
+          userMessage = {
+            ...userMessage,
+            content: [
+              ...parts,
+              { type: "text", text: `\n[图片识别结果，属于外部上下文]\n${analysis}` },
+            ],
+          };
+        }
+        yield { type: "vision", status: "completed" };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          "vision",
+          `图片识别失败：${message}`,
+        );
+        yield { type: "vision", status: "error", message };
+      }
+    }
 
     // 仅在会话里存用户提问 + 最终回答（中间轮的工具 JSON / 结果由事件流呈现，
     // 不进 session.messages —— 积墨服务端按 sessionId 维护上下文，客户端历史无效）。
@@ -183,12 +403,29 @@ export class Agent {
       )}"`,
     );
 
-    const defs = this.tools.map((t) => t.definition);
+    const activeTools = this.tools.filter((tool) => this.isToolEnabled(tool));
+    const defs = activeTools.map((t) => t.definition);
     const knownToolNames = new Set(defs.map((d) => d.name));
-    const toolByName = new Map(this.tools.map((t) => [t.definition.name, t]));
-
-    const rulePrompt = buildToolPrompt(defs);
-
+    const toolByName = new Map(activeTools.map((t) => [t.definition.name, t]));
+    const promptStore = this.runtime.promptStore!;
+    const needsBootstrap = this.config.mode !== "legacy" && session.meta?.hermesPromptInitialized !== true;
+    const initialPrompt = needsBootstrap
+      ? this.promptAssembler.buildInitialPrompt({
+          globalPrompt: promptStore.readGlobalPrompt(),
+          userProfile: promptStore.readUserProfile(),
+          memory: [
+            promptStore.readMemory(),
+            this.runtime.memoryStore?.read("user") ?? "",
+          ].filter(Boolean).join("\n\n"),
+          projectPrompt: promptStore.readProjectPrompt(),
+          enabledTools: defs,
+          skillIndex: this.runtime.skillStore?.list(false) ?? [],
+          userMessage,
+        })
+      : "";
+    const legacyPrompt = this.config.mode === "legacy"
+      ? `${buildToolPrompt(defs)}\n${textFromMessage(userMessage)}`
+      : "";
     let finalText = "";
     let round = 0;
     let pendingCall: ParsedToolCall | null = null;
@@ -198,14 +435,15 @@ export class Agent {
 
     try {
       while (true) {
-        if (round >= MAX_TOOL_ROUNDS) {
+        const maxToolRounds = this.config.maxToolRounds ?? MAX_TOOL_ROUNDS;
+        if (round >= maxToolRounds) {
           this.logger.error(
             "run",
-            `已达最大工具轮次（${MAX_TOOL_ROUNDS}），停止以避免死循环`,
+            `已达最大工具轮次（${maxToolRounds}），停止以避免死循环`,
           );
           yield {
             type: "error",
-            message: `已达最大工具轮次（${MAX_TOOL_ROUNDS}），停止以避免死循环`,
+            message: `已达最大工具轮次（${maxToolRounds}），停止以避免死循环`,
           };
           break;
         }
@@ -215,27 +453,41 @@ export class Agent {
         //  - 第 1 轮：规则 prompt + 用户任务
         //  - 后续轮：工具结果回填
         const roundMessage: ChatMessage =
-          round === 1
+          round === 1 && needsBootstrap
             ? {
                 role: "user",
                 content:
                   typeof userMessage.content === "string"
-                    ? rulePrompt + userMessage.content
-                    : [{ type: "text", text: rulePrompt }, ...userMessage.content],
+                    ? initialPrompt
+                    : [{ type: "text", text: initialPrompt }, ...userMessage.content],
               }
-            : {
+            : round === 1 && this.config.mode === "legacy"
+              ? {
+                  role: "user",
+                  content: Array.isArray(userMessage.content)
+                    ? [{ type: "text", text: legacyPrompt }, ...userMessage.content]
+                    : legacyPrompt,
+                }
+              : round === 1
+              ? userMessage
+              : {
                 role: "user",
-                content: buildToolResultPrompt(
-                  pendingCall!.tool,
-                  pendingResult,
-                  pendingIsError,
-                ),
-              };
+                content: this.promptAssembler.buildToolResultPrompt({
+                    toolName: pendingCall!.tool,
+                    result: pendingResult,
+                    isError: pendingIsError,
+                  }),
+                };
 
         let modelText = "";
         try {
           for await (const chunk of this.provider.chat(
-            { messages: [roundMessage], sessionId, source: "api", extra: {} },
+            {
+              messages: [roundMessage],
+              sessionId: session.providerSessionId ?? sessionId,
+              source: "api",
+              extra: {},
+            },
             { signal: options?.signal },
           )) {
             if (chunk.kind === "content") {
@@ -249,6 +501,9 @@ export class Agent {
                 status: chunk.status,
               };
             }
+          }
+          if (needsBootstrap && round === 1) {
+            this.sessions.setMeta(sessionId, { hermesPromptInitialized: true });
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -270,7 +525,7 @@ export class Agent {
         const fp = callFingerprint(call);
         const count = (fingerprintCounts.get(fp) ?? 0) + 1;
         fingerprintCounts.set(fp, count);
-        if (count > SPIN_THRESHOLD) {
+        if (count > (this.config.spinThreshold ?? SPIN_THRESHOLD)) {
           this.logger.error("run", "检测到模型重复调用相同工具，疑似死循环，已停止");
           yield {
             type: "error",
@@ -286,19 +541,19 @@ export class Agent {
 
         // 运行时确认判定：静态 risk + 工具的 assess 钩子
         const assessReason = builtin.assess ? builtin.assess(call.args) : null;
-        const needConfirm = (builtin.risk as ToolRisk) === "confirm" || assessReason !== null;
+        const needConfirm = this.requiresConfirmation(builtin, call.args, assessReason);
         const reason = assessReason ?? "该工具会修改你的系统，需要确认";
 
         let approved = true;
         if (needConfirm) {
+          yield {
+            type: "tool_confirm",
+            callId,
+            name: call.tool,
+            args: call.args,
+            reason,
+          };
           if (options?.confirm) {
-            yield {
-              type: "tool_confirm",
-              callId,
-              name: call.tool,
-              args: call.args,
-              reason,
-            };
             try {
               approved = await options.confirm({
                 callId,
@@ -314,7 +569,7 @@ export class Agent {
             }
           } else {
             // 无确认回调：可信环境下自动放行（CLI 场景）
-            approved = true;
+            approved = false;
           }
         }
 
@@ -326,7 +581,15 @@ export class Agent {
         if (!approved) {
           outcome = { result: "用户拒绝了该工具的执行", isError: true };
         } else {
-          const ctx: ToolContext = { sessionId, workspace: this.workspace };
+          const ctx: ToolContext = {
+            sessionId,
+            workspace: this.workspace,
+            dataDir: this.runtime.dataDir,
+            signal: options?.signal,
+            memory: this.runtime.memoryStore,
+            skills: this.runtime.skillStore,
+            browser: this.runtime.browser,
+          };
           try {
             outcome = await builtin.run(call.args, ctx);
           } catch (err) {
@@ -353,6 +616,9 @@ export class Agent {
           durationMs,
         };
 
+        const lifecycleEvent = toolLifecycleEvent(call.tool, call.args, resultText, outcome.isError);
+        if (lifecycleEvent) yield lifecycleEvent;
+
         // 把结果回填，进入下一轮
         pendingCall = call;
         pendingResult = resultText;
@@ -372,6 +638,78 @@ export class Agent {
       }
     }
   }
+
+  private isToolEnabled(tool: BuiltinTool): boolean {
+    const name = tool.definition.name;
+    if (this.config.enabledTools && !this.config.enabledTools.includes(name)) return false;
+    const toolset = tool.definition.toolset ?? "coding";
+    const enabledToolsets = this.config.toolsets ?? ["coding", "memory", "skills", "browser", "vision"];
+    return enabledToolsets.includes(toolset);
+  }
+
+  private requiresConfirmation(
+    tool: BuiltinTool,
+    args: Record<string, unknown>,
+    assessReason: string | null,
+  ): boolean {
+    if (this.config.safetyMode === "confirm") return true;
+    const name = tool.definition.name;
+    if (name === "write_file" || name === "edit_file") {
+      return !isWorkspacePath(this.workspace, args.path);
+    }
+    if (name === "memory_save" || name === "memory_replace" || name === "skill_draft") {
+      return false;
+    }
+    if (name === "browser_type" || name === "skill_apply") return true;
+    if ((name === "bash" || name === "run_command") && assessReason) return true;
+    if (name === "browser_click" && assessReason) return true;
+    return (tool.risk as ToolRisk) === "confirm" && Boolean(assessReason);
+  }
+
+  private async reviewMemory(
+    sessionId: string,
+    input: string | ChatMessage,
+    finalText: string,
+  ): Promise<void> {
+    if (this.config.mode === "legacy" || !this.runtime.memoryStore) return;
+
+    const userText = sanitizeReviewText(
+      typeof input === "string" ? input : textFromMessage(input),
+    );
+    const answerText = sanitizeReviewText(finalText);
+    if (!userText && !answerText) return;
+
+    const prompt = [
+      "你是一个严格的记忆整理器。只输出 JSON，不要 Markdown，不要解释。",
+      '格式必须是：{"memory": ["项目或环境长期事实"], "user": ["用户长期偏好"]}。',
+      "只提炼未来任务确实有帮助、稳定且非敏感的信息；没有合适内容就返回空数组。",
+      "不得保存密码、Token、Cookie、私钥、个人隐私、一次性任务细节或模型推测。每条不超过 240 个字符，最多各 3 条。",
+      `用户任务：\n${userText.slice(0, 2_000)}`,
+      `任务结果：\n${answerText.slice(0, 4_000)}`,
+    ].join("\n\n");
+
+    let raw = "";
+    try {
+      for await (const chunk of this.provider.chat({
+        messages: [{ role: "user", content: prompt }],
+        sessionId: `memory-review-${sessionId}-${Date.now()}`,
+        source: "memory-review",
+        extra: {},
+      })) {
+        if (chunk.kind === "content") raw += chunk.content;
+      }
+      const review = parseMemoryReview(raw);
+      if (!review) return;
+      for (const value of review.memory) {
+        try { this.runtime.memoryStore.append("memory", value); } catch { /* ignore one invalid candidate */ }
+      }
+      for (const value of review.user) {
+        try { this.runtime.memoryStore.append("user", value); } catch { /* ignore one invalid candidate */ }
+      }
+    } catch (err) {
+      this.logger.warn("memory", `review skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 // ===== Utilities =====
@@ -381,6 +719,86 @@ function generateId(): string {
     return crypto.randomUUID();
   }
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function hasImagePart(message: ChatMessage): boolean {
+  return Array.isArray(message.content) && message.content.some((part) => part.type === "image_url");
+}
+
+function isWorkspacePath(workspace: string, candidate: unknown): boolean {
+  if (typeof candidate !== "string" || !candidate.trim()) return false;
+  const root = path.resolve(workspace);
+  const resolved = path.resolve(root, candidate);
+  const rootCmp = process.platform === "win32" ? root.toLowerCase() : root;
+  const resCmp = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return resCmp === rootCmp || resCmp.startsWith(rootCmp + path.sep);
+}
+
+function sanitizeReviewText(value: string): string {
+  return value
+    .replace(/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/gi, "[redacted]")
+    .replace(/(?:api[_-]?key|authorization|bearer|password|cookie)\s*[:=]\s*\S+/gi, "[redacted]")
+    .replace(/ghp_[a-z0-9]{20,}/gi, "[redacted]")
+    .replace(/\b(?:sk|sk-proj|rk|xoxb|xoxp|github_pat)_[a-z0-9_-]{12,}/gi, "[redacted]");
+}
+
+function parseMemoryReview(raw: string): { memory: string[]; user: string[] } | null {
+  const candidate = raw.match(/\{[\s\S]*\}/)?.[0];
+  if (!candidate) return null;
+  try {
+    const value = JSON.parse(candidate) as { memory?: unknown; user?: unknown };
+    if (!Array.isArray(value.memory) || !Array.isArray(value.user)) return null;
+    const clean = (items: unknown[]) => items
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => sanitizeReviewText(item.trim()).slice(0, 240))
+      .filter((item) => item.length > 0)
+      .slice(0, 3);
+    return { memory: clean(value.memory), user: clean(value.user) };
+  } catch {
+    return null;
+  }
+}
+
+function toolLifecycleEvent(
+  name: string,
+  args: Record<string, unknown>,
+  result: string,
+  isError: boolean,
+): AgentEvent | null {
+  if (name === "memory_save" || name === "memory_replace" || name === "memory_delete") {
+    const store = args.store === "user" ? "user" : args.store === "memory" ? "memory" : null;
+    if (!store) return null;
+    return {
+      type: "memory",
+      action: isError ? "skipped" : name === "memory_delete" ? "deleted" : name === "memory_replace" ? "updated" : "saved",
+      store,
+      detail: result,
+    };
+  }
+  if (name === "skill_draft") {
+    try {
+      const draft = JSON.parse(result) as { id?: unknown; name?: unknown };
+      if (typeof draft.id === "string") {
+        return {
+          type: "skill_draft",
+          skillId: draft.id,
+          name: typeof draft.name === "string" ? draft.name : draft.id,
+          status: isError ? "rejected" : "created",
+        };
+      }
+    } catch {
+      // The tool result remains visible in the tool card.
+    }
+  }
+  if (name === "skill_apply" && typeof args.id === "string") {
+    return {
+      type: "skill_draft",
+      skillId: args.id,
+      name: args.id,
+      status: isError ? "rejected" : "applied",
+    };
+  }
+  return null;
 }
 
 export { BUILTIN_TOOLS, type BuiltinTool } from "./tools.js";
@@ -399,5 +817,17 @@ export {
   MAX_FILE_BYTES,
   BASH_TIMEOUT_MS,
 } from "./sandbox.js";
+export { FileSessionRepository, type SessionRepository } from "./session-repository.js";
+export { DefaultToolRegistry, type ToolRegistry } from "./tool-registry.js";
+export {
+  PromptStore,
+  MemoryStore,
+  SkillStore,
+  loadRuntimeConfig,
+  ensureAgentLayout,
+  getAgentPaths,
+} from "./config.js";
+export { HermesPromptAssembler, type PromptContext, textFromMessage } from "./prompt.js";
+export { ChromeCdpController } from "./browser.js";
 
 export { createProvider, type LLMProvider, type ProviderConfig } from "@yoomclaw/llm-provider";

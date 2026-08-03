@@ -11,19 +11,39 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { ToolDefinition, ToolRisk } from "@yoomclaw/protocol";
+import type { ToolDefinition, ToolRisk, ToolsetId } from "@yoomclaw/protocol";
 import {
   resolveInWorkspace,
   judgeCommand,
   MAX_FILE_BYTES,
   BASH_TIMEOUT_MS,
 } from "./sandbox.js";
+import type { MemoryStore, SkillStore, MemoryStoreName } from "./config.js";
+import { MEMORY_TOOLS } from "./memory-tools.js";
+import { SKILL_TOOLS } from "./skill-tools.js";
+import { BROWSER_TOOLS } from "./browser-tools.js";
 
 const execAsync = promisify(exec);
 
 export interface ToolContext {
   sessionId: string;
   workspace: string;
+  dataDir?: string;
+  signal?: AbortSignal;
+  memory?: MemoryStore;
+  skills?: SkillStore;
+  browser?: BrowserToolController;
+}
+
+export interface BrowserToolController {
+  snapshot(): Promise<{ url: string; title: string; text: string }>;
+  navigate(url: string): Promise<{ url: string; title: string; text: string }>;
+  click(selector: string): Promise<{ url: string; title: string; text: string }>;
+  type(selector: string, text: string): Promise<{ url: string; title: string; text: string }>;
+  scroll(direction: "up" | "down"): Promise<{ url: string; title: string; text: string }>;
+  back(): Promise<{ url: string; title: string; text: string }>;
+  screenshot(): Promise<{ url: string; title: string; path?: string }>;
+  status(): { connected: boolean; cdpUrl: string; pageUrl?: string; title?: string; message?: string };
 }
 
 export interface ToolOutcome {
@@ -449,6 +469,7 @@ const bash: BuiltinTool = {
         timeout: BASH_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
         windowsHide: true,
+        signal: ctx.signal,
       });
       const out = [stdout, stderr].filter(Boolean).join("\n").trim();
       return ok(out || "（命令执行成功，无输出）");
@@ -487,13 +508,53 @@ const getTime: BuiltinTool = {
   },
 };
 
-export const BUILTIN_TOOLS: BuiltinTool[] = [
+const CORE_TOOLS: BuiltinTool[] = [
   readFile,
   writeFile,
   editFile,
   listDir,
   grep,
+  {
+    ...grep,
+    definition: {
+      ...grep.definition,
+      name: "search_files",
+      description: "在工作区内搜索文件内容；这是 grep 的 Hermes 兼容名称。",
+    },
+  },
   glob,
   bash,
+  {
+    ...bash,
+    definition: {
+      ...bash.definition,
+      name: "run_command",
+      description: "在工作区内运行命令；这是 bash 的 Hermes 兼容名称。",
+    },
+  },
   getTime,
 ];
+
+function inferToolset(name: string): ToolsetId {
+  if (name.startsWith("memory_")) return "memory";
+  if (name.startsWith("skill_")) return "skills";
+  if (name.startsWith("browser_")) return "browser";
+  return "coding";
+}
+
+function withToolset(tool: BuiltinTool): BuiltinTool {
+  return {
+    ...tool,
+    definition: {
+      ...tool.definition,
+      toolset: tool.definition.toolset ?? inferToolset(tool.definition.name),
+    },
+  };
+}
+
+export const BUILTIN_TOOLS: BuiltinTool[] = [
+  ...CORE_TOOLS,
+  ...MEMORY_TOOLS,
+  ...SKILL_TOOLS,
+  ...BROWSER_TOOLS,
+].map(withToolset);

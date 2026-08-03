@@ -32,6 +32,7 @@ interface SessionData {
   id: string;
   title: string;
   messages: ChatMessage[];
+  runs?: Array<{ status: "running" | "completed" | "interrupted" | "failed" }>;
 }
 
 interface ConfirmDialog {
@@ -52,6 +53,7 @@ export default function ChatPage() {
   const [connected, setConnected] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prefill, setPrefill] = useState<ComposePrefill | null>(null);
+  const [runNotice, setRunNotice] = useState<string | null>(null);
   const [confirmMode, setConfirmMode] = useState<"confirm" | "no-confirm">(
     () =>
       (localStorage.getItem(CONFIRM_MODE_KEY) as "confirm" | "no-confirm") ||
@@ -61,6 +63,7 @@ export default function ChatPage() {
   confirmModeRef.current = confirmMode;
 
   const wsRef = useRef<WebSocket | null>(null);
+  const runIdRef = useRef<string | null>(null);
   const liveRef = useRef<LiveAssistant | null>(null);
   const disposedRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -80,6 +83,10 @@ export default function ChatPage() {
         setSessions(data);
         if (data.length > 0 && !currentSessionId) {
           selectSession(data[0].id);
+        } else if (data.length === 0) {
+          setCurrentSessionId(null);
+          setCurrentMessages([]);
+          setRunNotice(null);
         }
       }
     } catch (err) {
@@ -99,10 +106,19 @@ export default function ChatPage() {
         if (res.ok) {
           const data = (await res.json()) as SessionData;
           setCurrentMessages(data.messages ?? []);
+          const lastRun = data.runs?.[data.runs.length - 1];
+          setRunNotice(
+            lastRun?.status === "interrupted"
+              ? "上一轮任务在应用重启前已中断，可继续发送新任务。"
+              : lastRun?.status === "failed"
+                ? "上一轮任务执行失败，可查看历史消息后继续。"
+                : null,
+          );
         }
       } catch (err) {
         console.error("Failed to load session:", err);
         setCurrentMessages([]);
+        setRunNotice(null);
       }
     },
     [apiBase],
@@ -126,6 +142,7 @@ export default function ChatPage() {
         setSessions((prev) => [session, ...prev]);
         setCurrentSessionId(session.id);
         setCurrentMessages([]);
+        setRunNotice(null);
       }
     } catch (err) {
       console.error("Failed to load session:", err);
@@ -140,6 +157,7 @@ export default function ChatPage() {
         if (currentSessionId === id) {
           setCurrentSessionId(null);
           setCurrentMessages([]);
+          setRunNotice(null);
         }
       } catch (err) {
         console.error("Failed to delete session:", err);
@@ -168,17 +186,19 @@ export default function ChatPage() {
     socket.onopen = () => {
       setConnected(true);
       sendConfirmMode(confirmModeRef.current);
+      void refreshSessions();
     };
     socket.onmessage = (e) => handleWsMessage(e.data.toString());
     socket.onclose = () => {
       setConnected(false);
       wsRef.current = null;
+      setStreaming(false);
       if (!disposedRef.current) setTimeout(connectWs, 1500);
     };
     socket.onerror = () => {
       /* 会紧接着触发 close */
     };
-  }, [apiBase]);
+  }, [apiBase, refreshSessions]);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -250,6 +270,29 @@ export default function ChatPage() {
           text: (l.text ? l.text + "\n\n" : "") + ev.message,
         };
         break;
+      case "run":
+        next = { ...l, progress: ev.status === "running" ? { name: "任务运行中", percent: 0 } : null };
+        break;
+      case "memory":
+        next = { ...l, progress: { name: `记忆${ev.action}`, percent: 0 } };
+        break;
+      case "skill_draft":
+        next = { ...l, progress: { name: `Skill ${ev.status}`, percent: 0 } };
+        break;
+      case "browser":
+        next = { ...l, progress: { name: `浏览器${ev.status}`, percent: 0 } };
+        break;
+      case "vision":
+        next = {
+          ...l,
+          progress: {
+            name: ev.status === "error"
+              ? `识图失败：${ev.message ?? "未知错误"}`
+              : `识图${ev.status === "started" ? "中" : "完成"}`,
+            percent: ev.status === "completed" ? 100 : 0,
+          },
+        };
+        break;
       default:
         next = l;
     }
@@ -296,13 +339,17 @@ export default function ChatPage() {
       if (msg.type === "chat.event") {
         applyEvent(msg.event as AgentEvent);
       } else if (msg.type === "chat.end") {
+        if (msg.status === "interrupted") applyEvent({ type: "error", message: "任务已中断" });
+        if (msg.status === "failed") applyEvent({ type: "error", message: "任务执行失败" });
         commitLive();
         setStreaming(false);
+        runIdRef.current = null;
         refreshSessions();
       } else if (msg.type === "error") {
         applyEvent({ type: "error", message: String(msg.message ?? "未知错误") });
         commitLive();
         setStreaming(false);
+        runIdRef.current = null;
         refreshSessions();
       }
     },
@@ -310,10 +357,18 @@ export default function ChatPage() {
   );
 
   const stopStreaming = useCallback(() => {
-    wsRef.current?.close();
+    const sock = wsRef.current;
+    if (sock && sock.readyState === WebSocket.OPEN && currentSessionId && runIdRef.current) {
+      sock.send(JSON.stringify({
+        type: "chat.cancel",
+        sessionId: currentSessionId,
+        runId: runIdRef.current,
+      }));
+    }
     commitLive();
     setStreaming(false);
-  }, [commitLive]);
+    runIdRef.current = null;
+  }, [commitLive, currentSessionId]);
 
   const toggleConfirmMode = useCallback(() => {
     setConfirmMode((m) => (m === "confirm" ? "no-confirm" : "confirm"));
@@ -352,10 +407,11 @@ export default function ChatPage() {
           });
           if (resp.ok) {
             const up = (await resp.json()) as FileUploadResponse;
-            parts.push({
-              type: "file_url",
-              file_url: { url: up.url, fileId: up.fileId },
-            });
+            if (file.type.startsWith("image/")) {
+              parts.push({ type: "image_url", image_url: { url: up.url } });
+            } else {
+              parts.push({ type: "file_url", file_url: { url: up.url, fileId: up.fileId } });
+            }
           } else {
             parts.push({ type: "text", text: `[附件 ${file.name} 上传失败]` });
           }
@@ -375,11 +431,14 @@ export default function ChatPage() {
       liveRef.current = fresh;
       setLive(fresh);
       setStreaming(true);
+      const runId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      runIdRef.current = runId;
 
       sock.send(
         JSON.stringify({
-          type: "chat",
+          type: "chat.start",
           sessionId: currentSessionId,
+          runId,
           message: userMsg,
         }),
       );
@@ -455,13 +514,15 @@ export default function ChatPage() {
                 type="button"
                 className={`mode-chip ${confirmMode}`}
                 onClick={toggleConfirmMode}
-                title="切换工具执行确认模式：无需确认时写/执行类工具自动放行"
+                title="切换工具执行模式；工作区内安全操作自动执行，高风险操作始终需要确认"
               >
                 <ShieldIcon size={16} />
-                {confirmMode === "no-confirm" ? "无需确认" : "需确认"}
+                {confirmMode === "no-confirm" ? "工作区自动" : "高风险确认"}
               </button>
             </div>
           </header>
+
+          {runNotice && <div className="run-notice">{runNotice}</div>}
 
           {!currentSessionId ? (
             <div className="empty-state">
@@ -569,6 +630,14 @@ export default function ChatPage() {
           background: var(--bg-panel);
           -webkit-app-region: drag;
           flex-shrink: 0;
+        }
+        .run-notice {
+          flex-shrink: 0;
+          padding: 8px 16px;
+          border-bottom: 1px solid var(--border);
+          background: color-mix(in srgb, var(--warning) 10%, var(--bg));
+          color: var(--warning);
+          font-size: 12px;
         }
         /* 三段式：左侧导航组 / 右侧状态组 */
         .header-left {

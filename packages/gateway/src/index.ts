@@ -18,22 +18,30 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   Agent,
   SessionStore,
   BUILTIN_TOOLS,
+  FileSessionRepository,
+  PromptStore,
+  MemoryStore,
+  SkillStore,
+  ChromeCdpController,
+  loadRuntimeConfig,
   type BuiltinTool,
   type ConfirmFn,
 } from "@yoomclaw/agent-core";
-import { JimoProvider } from "@yoomclaw/llm-provider";
+import { JimoProvider, JimoVisionProvider } from "@yoomclaw/llm-provider";
 import type {
   ChatMessage,
   SessionSummary,
   GatewayMessage,
   FileUploadResponse,
   AgentEvent,
-  Session,
+  RuntimeConfig,
+  SessionRunStatus,
 } from "@yoomclaw/protocol";
 import type { AgentConfig } from "@yoomclaw/protocol";
 
@@ -54,6 +62,14 @@ export interface GatewayConfig {
   dataDir?: string;
   /** Static file directory for the desktop renderer UI (optional). */
   staticDir?: string;
+  /** Hermes-style runtime overrides. */
+  runtime?: Partial<RuntimeConfig>;
+  /** Optional second Jimo robot used for image/OCR preprocessing. */
+  visionConfig?: {
+    baseUrl: string;
+    shareId: string;
+    authorization: string;
+  };
 }
 
 // ===== Gateway Server =====
@@ -64,6 +80,12 @@ interface PendingConfirm {
   reject: (err: Error) => void;
 }
 
+interface ActiveRun {
+  ws: WebSocket;
+  sessionId: string;
+  controller: AbortController;
+}
+
 export class Gateway {
   private httpServer: http.Server;
   private wsServer: WebSocketServer;
@@ -71,31 +93,64 @@ export class Gateway {
   private tools: BuiltinTool[];
   private agent: Agent;
   private config: GatewayConfig;
+  private runtime: RuntimeConfig;
+  private promptStore: PromptStore;
+  private memoryStore: MemoryStore;
+  private skillStore: SkillStore;
+  private browser: ChromeCdpController;
   /** callId → 等待用户确认的裁决。 */
   private pendingConfirm = new Map<string, PendingConfirm>();
-  /** 每个连接当前的工具确认模式；默认需确认，no-confirm 时自动放行。 */
+  /** 兼容旧客户端的确认模式状态；高风险确认不会被该开关绕过。 */
   private confirmModes = new Map<WebSocket, "confirm" | "no-confirm">();
-  private sessionsFile: string;
+  private activeRuns = new Map<string, ActiveRun>();
 
   constructor(config: GatewayConfig) {
     this.config = config;
-    this.sessions = new SessionStore();
+    this.runtime = loadRuntimeConfig(process.env, {
+      ...config.runtime,
+      workspace: config.runtime?.workspace ?? config.workspace,
+      dataDir:
+        config.runtime?.dataDir ??
+        config.dataDir ??
+        path.join(config.workspace, ".claw-data"),
+    });
+    this.promptStore = new PromptStore(this.runtime.workspace, this.runtime.dataDir);
+    this.memoryStore = new MemoryStore(this.runtime.workspace, this.runtime.dataDir);
+    this.skillStore = new SkillStore(this.runtime.workspace, this.runtime.dataDir);
+    this.browser = new ChromeCdpController(this.runtime.dataDir, this.runtime.browserCdpUrl);
+    this.sessions = new SessionStore(
+      new FileSessionRepository(this.runtime.dataDir, this.runtime.workspace),
+      this.runtime.workspace,
+    );
     this.tools = BUILTIN_TOOLS;
 
     const provider = new JimoProvider(config.jimoConfig);
+    const visionConfig = config.visionConfig ?? readVisionConfig(process.env);
+    this.runtime.visionEnabled = Boolean(visionConfig?.shareId && visionConfig.authorization);
+    this.persistRuntimeConfig();
+    const vision = visionConfig?.shareId && visionConfig.authorization
+      ? new JimoVisionProvider(visionConfig)
+      : undefined;
     this.agent = new Agent(
-      config.agentConfig,
+      {
+        ...config.agentConfig,
+        mode: config.agentConfig.mode ?? this.runtime.mode,
+        toolsets: config.agentConfig.toolsets ?? this.runtime.toolsets,
+        safetyMode: config.agentConfig.safetyMode ?? this.runtime.safetyMode,
+      },
       provider,
       this.sessions,
       this.tools,
-      config.workspace,
+      this.runtime.workspace,
+      {
+        dataDir: this.runtime.dataDir,
+        promptStore: this.promptStore,
+        memoryStore: this.memoryStore,
+        skillStore: this.skillStore,
+        browser: this.browser,
+        vision,
+      },
     );
-
-    this.sessionsFile = path.join(
-      config.dataDir ?? path.join(config.workspace, ".claw-data"),
-      "sessions.json",
-    );
-    this.loadSessions();
 
     this.httpServer = http.createServer((req, res) => this.handleHttp(req, res));
     this.wsServer = new WebSocketServer({
@@ -114,6 +169,9 @@ export class Gateway {
   }
 
   async stop(): Promise<void> {
+    for (const active of this.activeRuns.values()) active.controller.abort();
+    for (const pending of this.pendingConfirm.values()) pending.reject(new Error("Gateway stopped"));
+    this.pendingConfirm.clear();
     return new Promise((resolve) => {
       this.wsServer.close();
       this.httpServer.close(() => resolve());
@@ -125,7 +183,7 @@ export class Gateway {
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     // CORS
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -141,6 +199,106 @@ export class Gateway {
         return this.sendJson(res, 200, { status: "ok", uptime: process.uptime() });
       }
 
+      if (path === "/api/config" && req.method === "GET") {
+        return this.sendJson(res, 200, this.publicConfig());
+      }
+
+      if (path === "/api/config" && req.method === "PATCH") {
+        const body = (await readJsonBody(req)) as Record<string, unknown>;
+        this.updateRuntimeConfig(body);
+        return this.sendJson(res, 200, this.publicConfig());
+      }
+
+      const promptMatch = path.match(/^\/api\/config\/prompts\/(global|user|project)$/);
+      if (promptMatch) {
+        const target = promptMatch[1];
+        if (req.method === "GET") {
+          return this.sendJson(res, 200, { target, content: this.readPrompt(target) });
+        }
+        if (req.method === "PUT") {
+          const body = (await readJsonBody(req)) as { content?: string };
+          if (typeof body.content !== "string") {
+            return this.sendJson(res, 400, { error: "content is required" });
+          }
+          this.writePrompt(target, body.content);
+          return this.sendJson(res, 200, { target, content: this.readPrompt(target) });
+        }
+      }
+
+      if (path === "/api/memory" && req.method === "GET") {
+        return this.sendJson(res, 200, {
+          memory: this.memoryStore.read("memory"),
+          user: this.memoryStore.read("user"),
+        });
+      }
+
+      const memoryMatch = path.match(/^\/api\/memory\/(memory|user)$/);
+      if (memoryMatch) {
+        const store = memoryMatch[1] as "memory" | "user";
+        if (req.method === "PUT") {
+          const body = (await readJsonBody(req)) as { content?: string };
+          if (typeof body.content !== "string") return this.sendJson(res, 400, { error: "content is required" });
+          this.memoryStore.replace(store, body.content);
+          return this.sendJson(res, 200, { store, content: this.memoryStore.read(store) });
+        }
+        if (req.method === "DELETE") {
+          this.memoryStore.replace(store, "");
+          return this.sendJson(res, 200, { store, content: "" });
+        }
+      }
+
+      if (path === "/api/skills" && req.method === "GET") {
+        return this.sendJson(res, 200, this.skillStore.list(true));
+      }
+
+      const skillMatch = path.match(/^\/api\/skills\/([^/]+)(?:\/(apply|reject))?$/);
+      if (skillMatch) {
+        const skillId = decodeURIComponent(skillMatch[1]);
+        const action = skillMatch[2];
+        if (req.method === "GET" && !action) {
+          const skill = this.skillStore.get(skillId, true);
+          return skill
+            ? this.sendJson(res, 200, skill)
+            : this.sendJson(res, 404, { error: "Skill not found" });
+        }
+        if (req.method === "POST" && action === "apply") {
+          return this.sendJson(res, 200, this.skillStore.apply(skillId));
+        }
+        if (req.method === "POST" && action === "reject") {
+          return this.sendJson(res, 200, { deleted: this.skillStore.reject(skillId) });
+        }
+      }
+
+      if (path === "/api/browser/status" && req.method === "GET") {
+        return this.sendJson(res, 200, this.browser.status());
+      }
+      if (path === "/api/browser/connect" && req.method === "POST") {
+        const body = (await readJsonBody(req)) as { cdpUrl?: string };
+        await this.browser.connect(body.cdpUrl ?? this.runtime.browserCdpUrl);
+        return this.sendJson(res, 200, this.browser.status());
+      }
+      if (path === "/api/browser/disconnect" && req.method === "POST") {
+        await this.browser.disconnect();
+        return this.sendJson(res, 200, this.browser.status());
+      }
+
+      const runMatch = path.match(/^\/api\/runs\/([^/]+)(?:\/cancel)?$/);
+      if (runMatch) {
+        const runId = decodeURIComponent(runMatch[1]);
+        if (req.method === "GET") {
+          const found = this.sessions.findRun(runId);
+          return found
+            ? this.sendJson(res, 200, found)
+            : this.sendJson(res, 404, { error: "Run not found" });
+        }
+        if (req.method === "POST" && path.endsWith("/cancel")) {
+          const active = this.activeRuns.get(runId);
+          if (!active) return this.sendJson(res, 404, { error: "Run is not active" });
+          active.controller.abort();
+          return this.sendJson(res, 202, { runId, status: "interrupted" });
+        }
+      }
+
       if (path === "/api/sessions" && req.method === "GET") {
         return this.sendJson(res, 200, this.sessions.list());
       }
@@ -148,7 +306,6 @@ export class Gateway {
       if (path === "/api/sessions" && req.method === "POST") {
         const body = (await readJsonBody(req)) as { title?: string };
         const session = this.sessions.create(body?.title);
-        this.saveSessions();
         const summary: SessionSummary = {
           id: session.id,
           title: session.title,
@@ -169,7 +326,6 @@ export class Gateway {
         }
         if (req.method === "DELETE") {
           const deleted = this.sessions.delete(id);
-          if (deleted) this.saveSessions();
           return this.sendJson(res, deleted ? 204 : 404, deleted ? null : { error: "Not found" });
         }
       }
@@ -244,7 +400,6 @@ export class Gateway {
       });
     } finally {
       res.end();
-      this.saveSessions();
     }
   }
 
@@ -297,6 +452,12 @@ export class Gateway {
           p.reject(new Error("连接已关闭"));
         }
       }
+      for (const [runId, active] of this.activeRuns) {
+        if (active.ws === ws) {
+          active.controller.abort();
+          this.activeRuns.delete(runId);
+        }
+      }
       this.confirmModes.delete(ws);
     });
   }
@@ -312,7 +473,6 @@ export class Gateway {
       }
       case "session.create": {
         const session = this.sessions.create(msg.title);
-        this.saveSessions();
         ws.send(JSON.stringify({
           type: "session.create.result",
           session: {
@@ -335,7 +495,7 @@ export class Gateway {
         break;
       }
       case "session.delete": {
-        if (this.sessions.delete(msg.sessionId)) this.saveSessions();
+        this.sessions.delete(msg.sessionId);
         break;
       }
       case "tool.decision": {
@@ -361,52 +521,18 @@ export class Gateway {
         break;
       }
       case "chat": {
-        const message = msg.message;
-        const ac = new AbortController();
-        const onClose = () => ac.abort();
-        ws.once("close", onClose);
-
-        // 危险工具确认：把裁决请求挂起，等前端 tool.decision 回来再放行。
-        // no-confirm 模式下直接放行，不再弹确认框（事件也不转发给前端）。
-        const confirm: ConfirmFn = (req) =>
-          new Promise<boolean>((resolve, reject) => {
-            if (this.confirmModes.get(ws) === "no-confirm") {
-              resolve(true);
-              return;
-            }
-            this.pendingConfirm.set(req.callId, { ws, resolve, reject });
-          });
-
-        try {
-          for await (const ev of this.agent.run(msg.sessionId, message, {
-            signal: ac.signal,
-            confirm,
-          })) {
-            // no-confirm 模式：不把 tool_confirm 事件发给前端，避免闪一下确认框
-            if (
-              ev.type === "tool_confirm" &&
-              this.confirmModes.get(ws) === "no-confirm"
-            ) {
-              continue;
-            }
-            ws.send(JSON.stringify({
-              type: "chat.event",
-              sessionId: msg.sessionId,
-              event: ev,
-            } satisfies GatewayMessage));
-          }
-          ws.send(JSON.stringify({
-            type: "chat.end",
-            sessionId: msg.sessionId,
-          } satisfies GatewayMessage));
-        } catch (err) {
-          ws.send(JSON.stringify({
-            type: "error",
-            message: err instanceof Error ? err.message : String(err),
-          }));
-        } finally {
-          ws.off("close", onClose);
-          this.saveSessions();
+        await this.handleWsChat(ws, msg.sessionId, msg.message, generateId());
+        return;
+        break;
+      }
+      case "chat.start": {
+        await this.handleWsChat(ws, msg.sessionId, msg.message, msg.runId);
+        break;
+      }
+      case "chat.cancel": {
+        const active = this.activeRuns.get(msg.runId);
+        if (active && active.sessionId === msg.sessionId) {
+          active.controller.abort();
         }
         break;
       }
@@ -419,24 +545,177 @@ export class Gateway {
     }
   }
 
-  // ===== Session 持久化 =====
+  private async handleWsChat(
+    ws: WebSocket,
+    sessionId: string,
+    message: ChatMessage,
+    runId: string,
+  ): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
+      return;
+    }
 
-  private loadSessions(): void {
+    const existing = [...this.activeRuns.values()].find((run) => run.sessionId === sessionId);
+    if (existing || this.activeRuns.has(runId)) {
+      ws.send(JSON.stringify({
+        type: "error",
+        code: "RUN_ACTIVE",
+        message: "This session already has an active run",
+        runId,
+      }));
+      return;
+    }
+
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    this.activeRuns.set(runId, { ws, sessionId, controller });
+    ws.once("close", onClose);
+
+    const confirm: ConfirmFn = (request) => {
+      if (controller.signal.aborted) {
+        return Promise.reject(new Error("Run cancelled"));
+      }
+      return new Promise<boolean>((resolve, reject) => {
+        let settled = false;
+        const onAbort = () => settle(() => reject(new Error("Run cancelled")));
+        const cleanup = () => {
+          controller.signal.removeEventListener("abort", onAbort);
+          this.pendingConfirm.delete(request.callId);
+        };
+        const settle = (callback: () => void) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          callback();
+        };
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        this.pendingConfirm.set(request.callId, {
+          ws,
+          resolve: (approved) => settle(() => resolve(approved)),
+          reject: (error) => settle(() => reject(error)),
+        });
+      });
+    };
+
+    let status: SessionRunStatus = "completed";
+    let thrownError: string | undefined;
     try {
-      const raw = fs.readFileSync(this.sessionsFile, "utf8");
-      const arr = JSON.parse(raw) as Session[];
-      if (Array.isArray(arr)) this.sessions.load(arr);
-    } catch {
-      // 还没有持久化文件，跳过
+      for await (const event of this.agent.run(sessionId, message, {
+        signal: controller.signal,
+        confirm,
+        runId,
+      })) {
+        if (event.type === "run" && event.status !== "running") {
+          status = event.status;
+        } else if (event.type === "error") {
+          status = controller.signal.aborted ? "interrupted" : "failed";
+        }
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "chat.event",
+            sessionId,
+            runId,
+            event,
+          } satisfies GatewayMessage));
+        }
+      }
+    } catch (err) {
+      status = controller.signal.aborted ? "interrupted" : "failed";
+      thrownError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (thrownError && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "error",
+          code: status === "interrupted" ? "RUN_INTERRUPTED" : "RUN_FAILED",
+          message: thrownError,
+          runId,
+        }));
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "chat.end",
+          sessionId,
+          runId,
+          status,
+        } satisfies GatewayMessage));
+      }
+      ws.off("close", onClose);
+      this.activeRuns.delete(runId);
     }
   }
 
-  private saveSessions(): void {
+  // ===== Session 持久化 =====
+
+  private publicConfig(): Record<string, unknown> {
+    return {
+      mode: this.runtime.mode,
+      workspace: this.runtime.workspace,
+      dataDir: this.runtime.dataDir,
+      toolsets: this.runtime.toolsets,
+      safetyMode: this.runtime.safetyMode,
+      browserCdpUrl: this.runtime.browserCdpUrl,
+      browser: this.browser.status(),
+      visionConfigured: this.runtime.visionEnabled,
+      prompts: {
+        global: this.promptStore.readGlobalPrompt(),
+        user: this.promptStore.readUserProfile(),
+        project: this.promptStore.readProjectPrompt(),
+      },
+    };
+  }
+
+  private updateRuntimeConfig(patch: Record<string, unknown>): void {
+    if (patch.mode === "legacy" || patch.mode === "hermes") {
+      this.runtime.mode = patch.mode;
+      this.config.agentConfig.mode = patch.mode;
+      this.agent.config.mode = patch.mode;
+    }
+    if (Array.isArray(patch.toolsets)) {
+      this.runtime.toolsets = patch.toolsets.filter((value): value is RuntimeConfig["toolsets"][number] =>
+        ["coding", "memory", "skills", "browser", "vision"].includes(String(value)),
+      );
+      this.config.agentConfig.toolsets = this.runtime.toolsets;
+      this.agent.config.toolsets = this.runtime.toolsets;
+    }
+    if (patch.safetyMode === "confirm" || patch.safetyMode === "workspace-auto") {
+      this.runtime.safetyMode = patch.safetyMode;
+      this.config.agentConfig.safetyMode = patch.safetyMode;
+      this.agent.config.safetyMode = patch.safetyMode;
+    }
+    if (typeof patch.browserCdpUrl === "string" && patch.browserCdpUrl.trim()) {
+      this.runtime.browserCdpUrl = patch.browserCdpUrl.trim();
+    }
+    this.persistRuntimeConfig();
+  }
+
+  private readPrompt(target: string): string {
+    if (target === "global") return this.promptStore.readGlobalPrompt();
+    if (target === "user") return this.promptStore.readUserProfile();
+    return this.promptStore.readProjectPrompt();
+  }
+
+  private writePrompt(target: string, content: string): void {
+    if (target === "global") this.promptStore.writeGlobalPrompt(content);
+    else if (target === "user") this.promptStore.writeUserProfile(content);
+    else this.promptStore.writeProjectPrompt(content);
+  }
+
+  private persistRuntimeConfig(): void {
     try {
-      fs.mkdirSync(path.dirname(this.sessionsFile), { recursive: true });
-      fs.writeFileSync(this.sessionsFile, JSON.stringify(this.sessions.dump()), "utf8");
+      const file = path.join(this.runtime.dataDir, "config.json");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({
+        mode: this.runtime.mode,
+        workspace: this.runtime.workspace,
+        toolsets: this.runtime.toolsets,
+        safetyMode: this.runtime.safetyMode,
+        browserCdpUrl: this.runtime.browserCdpUrl,
+        visionEnabled: this.runtime.visionEnabled,
+      }, null, 2), "utf8");
     } catch (err) {
-      console.error("[Gateway] 保存会话失败:", err);
+      console.error("[Gateway] 配置保存失败:", err);
     }
   }
 
@@ -465,6 +744,21 @@ export class Gateway {
 // ===== Helpers =====
 
 /** 从 ChatMessage.content 里抽取纯文本（支持多模态数组）。 */
+function generateId(): string {
+  return randomUUID();
+}
+
+function readVisionConfig(env: NodeJS.ProcessEnv): GatewayConfig["visionConfig"] {
+  const shareId = env.JIMO_VISION_SHARE_ID?.trim();
+  const authorization = env.JIMO_VISION_AUTHORIZATION?.trim();
+  if (!shareId || !authorization) return undefined;
+  return {
+    baseUrl: env.JIMO_VISION_API_BASE_URL ?? env.JIMO_API_BASE_URL ?? "https://jimoai-bot-api.xiaohuodui.cn",
+    shareId,
+    authorization,
+  };
+}
+
 function textOf(content: string | ChatMessage["content"]): string {
   if (typeof content === "string") return content;
   return content
@@ -521,7 +815,7 @@ export function startGateway(config?: Partial<GatewayConfig>): Gateway {
   const finalConfig: GatewayConfig = {
     host: config?.host ?? env.GATEWAY_HOST ?? "127.0.0.1",
     port: config?.port ?? Number(env.GATEWAY_PORT ?? 18789),
-    workspace: config?.workspace ?? env.CLAW_WORKSPACE ?? process.cwd(),
+    workspace: config?.workspace ?? env.YOOMCLAW_WORKSPACE ?? env.CLAW_WORKSPACE ?? process.cwd(),
     agentConfig: config?.agentConfig ?? {
       provider: "jimo",
       model: env.DEFAULT_MODEL ?? "jimo-default",
@@ -531,8 +825,10 @@ export function startGateway(config?: Partial<GatewayConfig>): Gateway {
       shareId: env.JIMO_SHARE_ID ?? "",
       authorization: env.JIMO_AUTHORIZATION ?? "",
     },
-    dataDir: config?.dataDir,
+    dataDir: config?.dataDir ?? env.YOOMCLAW_DATA_DIR,
     staticDir: config?.staticDir,
+    runtime: config?.runtime,
+    visionConfig: config?.visionConfig ?? readVisionConfig(env),
   };
 
   const gateway = new Gateway(finalConfig);

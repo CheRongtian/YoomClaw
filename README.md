@@ -37,8 +37,8 @@ YoomClaw is a minimal implementation of an OpenClaw-style AI assistant framework
                      ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Agent Core                                              │
-│   ├─ SessionStore — in-memory chat history               │
-│   ├─ ToolRegistry — pluggable tools (echo, get_time, …)  │
+│   ├─ SessionStore — file-backed sessions and run events  │
+│   ├─ ToolRegistry — coding, memory, Skills, browser tools│
 │   └─ Agent — orchestrates LLM calls + history + tools    │
 └────────────────────┬─────────────────────────────────────┘
                      │
@@ -127,10 +127,12 @@ This project uses the JimoAI API format (see [api.md](./docs/api.md)):
 ### Add a new tool
 
 ```typescript
-import { ToolRegistry } from "@yoomclaw/agent-core";
+import { DefaultToolRegistry } from "@yoomclaw/agent-core";
 
-registry.register(
-  {
+const registry = new DefaultToolRegistry();
+registry.register({
+  risk: "safe",
+  definition: {
     name: "my_tool",
     description: "Does something useful",
     parameters: {
@@ -139,16 +141,41 @@ registry.register(
       required: ["input"],
     },
   },
-  async (args, ctx) => ({
-    toolCallId: "",
-    result: `Processed: ${args.input}`,
-  }),
-);
+  async run(args, _context) {
+    return { result: `Processed: ${String(args.input ?? "")}`, isError: false };
+  },
+});
 ```
 
 ### Add a new LLM provider
 
 Implement the `LLMProvider` interface in `@yoomclaw/llm-provider` and register it in the factory.
+
+## Hermes Mode
+
+当前默认运行模式是 `Hermes Mode`：它保留现有积墨 AI 主 API 和 Jimo SSE 请求格式，在本地增加了可选工作区、文件优先会话、全局/项目提示词、长期记忆、Skills 草稿、编程工具、Chrome CDP 浏览器工具和独立识图机器人。
+
+桌面端打开“设置 → Agent”即可：
+
+- 选择项目工作区；工作区规则保存为项目根目录的 `AGENTS.md`。
+- 编辑全局提示词、用户偏好和项目提示词。
+- 开关 Toolsets，编辑记忆，批准或拒绝 Skills 草稿。
+- 设置并连接已经用 `--remote-debugging-port=9222` 启动的 Chrome。
+
+运行数据默认保存到 Electron 的 `<userData>/YoomClaw/`，包括 `prompts/`、`memories/`、`skills/`、`sessions/`、`browser/` 和 `logs/`。旧工作区中的 `.claw-data/sessions.json` 会被复制迁移为单会话文件，原文件不会删除。
+
+积墨 API 不支持原生 `system` / `tools` / 客户端完整 history，因此 Hermes 首轮会把规则、记忆、项目提示词和工具说明拼进 user 内容；后续轮次只发送工具结果，并始终使用同一个 provider session id。视觉机器人必须使用独立的 `JIMO_VISION_*` shareId 和 token；未配置时普通文字聊天仍可用。
+
+高风险操作仍会确认或阻止：越出工作区、读取 `.env` / SSH 私钥、管理员权限、递归危险删除、下载后直接执行、Git 提交/合并、浏览器输入和提交操作不会因为工作区自动执行而绕过安全边界。
+
+验证命令：
+
+```bash
+pnpm -r --if-present lint
+pnpm --dir apps/desktop/renderer run typecheck
+pnpm --dir apps/desktop/renderer run build
+pnpm test
+```
 
 ## License
 
