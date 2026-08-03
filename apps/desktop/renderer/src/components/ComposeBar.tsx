@@ -5,13 +5,19 @@ import {
   KeyboardEvent,
   ChangeEvent,
 } from "react";
-import { SendIcon, StopIcon, PlusIcon } from "./icons";
+import { SendIcon, StopIcon, PaperclipIcon } from "./icons";
+
+export interface ComposePrefill {
+  text: string;
+  nonce: number;
+}
 
 interface Props {
   onSend: (text: string, files: File[]) => void;
   onStop: () => void;
   disabled?: boolean;
   streaming: boolean;
+  prefill?: ComposePrefill | null;
 }
 
 function formatSize(bytes: number): string {
@@ -20,7 +26,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export default function ComposeBar({ onSend, onStop, disabled, streaming }: Props) {
+export default function ComposeBar({ onSend, onStop, disabled, streaming, prefill }: Props) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -34,6 +40,18 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming }: Prop
     }
     prevStreaming.current = streaming;
   }, [streaming]);
+
+  // 外部预填（空状态建议 chip 点击后把提示词放进输入框）
+  useEffect(() => {
+    if (!prefill) return;
+    setText(prefill.text);
+    const ta = textareaRef.current;
+    if (ta) {
+      ta.focus();
+      ta.style.height = "auto";
+      ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+    }
+  }, [prefill]);
 
   const handleSubmit = () => {
     const trimmed = text.trim();
@@ -75,56 +93,6 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming }: Prop
 
   return (
     <div className="compose-bar">
-      <div className="compose-inner">
-        <button
-          type="button"
-          className="attach-btn"
-          onClick={() => fileInputRef.current?.click()}
-          title="添加附件"
-          aria-label="添加附件"
-        >
-          <PlusIcon size={18} />
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          hidden
-          onChange={handleFileChange}
-        />
-        <textarea
-          ref={textareaRef}
-          className="compose-input"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onInput={handleInput}
-          placeholder={
-            disabled
-              ? "请先选择或新建对话..."
-              : "给 YoomClaw 发送消息 · Enter 发送 · Shift+Enter 换行"
-          }
-          rows={1}
-          disabled={disabled}
-        />
-        <div className="compose-actions">
-          {streaming ? (
-            <button className="stop-btn" onClick={onStop} title="停止生成">
-              <StopIcon size={16} />
-            </button>
-          ) : (
-            <button
-              className="send-btn"
-              onClick={handleSubmit}
-              disabled={!canSend}
-              title="发送 (Enter)"
-            >
-              <SendIcon size={16} />
-            </button>
-          )}
-        </div>
-      </div>
-
       {attachments.length > 0 && (
         <div className="compose-attachments">
           {attachments.map((f, i) => (
@@ -145,28 +113,76 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming }: Prop
         </div>
       )}
 
+      <div className="compose-inner">
+        <textarea
+          ref={textareaRef}
+          className="compose-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onInput={handleInput}
+          placeholder={
+            disabled
+              ? "请先选择或新建对话..."
+              : "给 YoomClaw 发送消息…"
+          }
+          rows={1}
+          disabled={disabled}
+        />
+        <div className="compose-toolbar">
+          <button
+            type="button"
+            className="tool-btn"
+            onClick={() => fileInputRef.current?.click()}
+            title="添加附件"
+            aria-label="添加附件"
+          >
+            <PaperclipIcon size={20} />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            onChange={handleFileChange}
+          />
+          {streaming ? (
+            <button className="stop-btn" onClick={onStop} title="停止生成">
+              <StopIcon size={16} />
+            </button>
+          ) : (
+            <button
+              className="send-btn"
+              onClick={handleSubmit}
+              disabled={!canSend}
+              title="发送 (Enter)"
+            >
+              <SendIcon size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="compose-footer">
         <span className="footer-note">
-          YoomClaw 可能产生不准确的信息 · 请验证重要细节
+          Enter 发送 · Shift+Enter 换行 · YoomClaw 可能产生不准确的信息
         </span>
       </div>
 
       <style jsx>{`
         .compose-bar {
-          border-top: 1px solid var(--border);
-          background: var(--bg-panel);
-          padding: 10px 20px 6px;
+          padding: 10px 24px 8px;
           flex-shrink: 0;
         }
         .compose-inner {
           max-width: 860px;
           margin: 0 auto;
           display: flex;
-          gap: 8px;
-          align-items: flex-end;
+          flex-direction: column;
+          gap: 10px;
           background: var(--composer-bg);
-          border-radius: 14px;
-          padding: 8px 8px 8px 8px;
+          border-radius: 12px;
+          padding: 12px 12px 10px;
           border: 1px solid var(--composer-border);
           transition: border-color 0.15s, box-shadow 0.15s;
         }
@@ -174,31 +190,13 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming }: Prop
           border-color: var(--composer-focus-border);
           box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-focus-border) 18%, transparent);
         }
-        .attach-btn {
-          width: 34px;
-          height: 34px;
-          border-radius: 8px;
-          flex-shrink: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          border: 1px solid var(--border);
-          background: var(--bg-element);
-          color: var(--text-secondary);
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-        .attach-btn:hover {
-          border-color: var(--border-active);
-          color: var(--text);
-        }
         .compose-input {
-          flex: 1;
+          width: 100%;
           border: none;
           background: transparent;
           color: var(--text);
           font-family: inherit;
-          font-size: 14.5px;
+          font-size: 14px;
           line-height: 1.5;
           resize: none;
           outline: none;
@@ -207,23 +205,35 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming }: Prop
         }
         .compose-input::placeholder { color: var(--text-muted); }
         .compose-input:disabled { cursor: not-allowed; opacity: 0.5; }
-        .send-btn, .stop-btn {
-          width: 34px;
-          height: 34px;
+        /* 工具行：附件居左，发送/停止居右 */
+        .compose-toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .tool-btn {
+          width: 32px;
+          height: 32px;
           border-radius: 8px;
-          font-size: 16px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--text-secondary);
+          transition: background 0.15s, color 0.15s;
+        }
+        .tool-btn:hover {
+          background: var(--bg-element);
+          color: var(--text);
+        }
+        .send-btn, .stop-btn {
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
           display: flex;
           align-items: center;
           justify-content: center;
           flex-shrink: 0;
           transition: background 0.15s, filter 0.15s;
-        }
-        .compose-actions {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-end;
-          gap: 8px;
-          flex-shrink: 0;
         }
         .send-btn {
           background: var(--send-bg);
@@ -246,7 +256,7 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming }: Prop
         }
         .compose-attachments {
           max-width: 860px;
-          margin: 6px auto 0;
+          margin: 0 auto 6px;
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
@@ -294,17 +304,10 @@ export default function ComposeBar({ onSend, onStop, disabled, streaming }: Prop
         }
         .compose-footer {
           max-width: 860px;
-          margin: 4px auto 0;
+          margin: 6px auto 0;
           font-size: 11px;
           color: var(--text-muted);
           text-align: center;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 10px;
-        }
-        .footer-note {
-          color: var(--text-muted);
         }
       `}</style>
     </div>

@@ -9,11 +9,11 @@ import type {
 } from "@yoomclaw/protocol";
 import MessageStream, { type LiveAssistant } from "./MessageStream";
 import SessionSidebar from "./SessionSidebar";
-import ComposeBar from "./ComposeBar";
+import ComposeBar, { type ComposePrefill } from "./ComposeBar";
 import WindowFrame from "./WindowFrame";
 import SpiralLogo from "./SpiralLogo";
 import SettingsPanel from "./SettingsPanel";
-import { MenuIcon, PlusIcon, WarningIcon } from "./icons";
+import { PanelLeftIcon, PlusIcon, ShieldIcon, WarningIcon } from "./icons";
 
 const GATEWAY_URL = "http://localhost:18789";
 const CONFIRM_MODE_KEY = "yoomclaw-confirm-mode";
@@ -51,6 +51,7 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [connected, setConnected] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [prefill, setPrefill] = useState<ComposePrefill | null>(null);
   const [confirmMode, setConfirmMode] = useState<"confirm" | "no-confirm">(
     () =>
       (localStorage.getItem(CONFIRM_MODE_KEY) as "confirm" | "no-confirm") ||
@@ -318,6 +319,15 @@ export default function ChatPage() {
     setConfirmMode((m) => (m === "confirm" ? "no-confirm" : "confirm"));
   }, []);
 
+  /** 空状态建议 chip：先建会话，再把提示词预填进输入框 */
+  const startWithPrompt = useCallback(
+    (text: string) => {
+      createSession();
+      setPrefill({ text, nonce: Date.now() });
+    },
+    [createSession],
+  );
+
   const sendMessage = useCallback(
     async (text: string, files: File[]) => {
       if (!currentSessionId || streaming) return;
@@ -406,7 +416,7 @@ export default function ChatPage() {
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
   return (
-    <WindowFrame onOpenSettings={() => setSettingsOpen(true)}>
+    <WindowFrame>
       <div className="app-shell">
         <SessionSidebar
           sessions={sessions}
@@ -416,48 +426,63 @@ export default function ChatPage() {
           onCreate={createSession}
           onDelete={deleteSession}
           onClose={() => setSidebarOpen(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
         <main className="chat-main">
           <header className="chat-header">
-            <button
-              className="header-btn"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="打开侧栏"
-              title="打开侧栏"
-            >
-              <MenuIcon size={18} />
-            </button>
-            <h1 className="chat-title">
-              <SpiralLogo size={18} /> {currentSession?.title ?? "YoomClaw"}
-            </h1>
-            <span
-              className={`conn ${connected ? "on" : "off"}`}
-              title={connected ? "已连接" : "连接中…"}
-            />
-            <button
-              type="button"
-              className={`hdr-mode ${confirmMode}`}
-              onClick={toggleConfirmMode}
-              title="切换工具执行确认模式：无需确认时写/执行类工具自动放行"
-            >
-              {confirmMode === "no-confirm" ? "无需确认" : "需确认"}
-            </button>
-            <button
-              className="header-btn new-chat"
-              onClick={createSession}
-              title="新建对话"
-            >
-              <PlusIcon size={18} />
-            </button>
+            <div className="header-left">
+              <button
+                className="header-btn"
+                onClick={() => setSidebarOpen((v) => !v)}
+                aria-label="切换侧栏"
+                title="切换侧栏"
+              >
+                <PanelLeftIcon size={20} />
+              </button>
+              <h1 className="chat-title">
+                {currentSession?.title ?? "YoomClaw"}
+              </h1>
+            </div>
+            <div className="header-right">
+              <span
+                className={`conn-chip ${connected ? "on" : "off"}`}
+                title={connected ? "已连接" : "连接中…"}
+              >
+                <span className="conn-dot" />
+                {connected ? "已连接" : "连接中"}
+              </span>
+              <button
+                type="button"
+                className={`mode-chip ${confirmMode}`}
+                onClick={toggleConfirmMode}
+                title="切换工具执行确认模式：无需确认时写/执行类工具自动放行"
+              >
+                <ShieldIcon size={16} />
+                {confirmMode === "no-confirm" ? "无需确认" : "需确认"}
+              </button>
+            </div>
           </header>
 
           {!currentSessionId ? (
             <div className="empty-state">
-              <SpiralLogo size={72} />
+              <SpiralLogo size={56} />
               <h2>YoomClaw</h2>
-              <p>
-                你的本地 AI 助手 · 点击 <b>＋</b> 开始对话
-              </p>
+              <p>你的本地 AI 助手 · 数据不上传</p>
+              <button className="empty-cta" onClick={createSession}>
+                <PlusIcon size={16} />
+                <span>开始新对话</span>
+              </button>
+              <div className="empty-chips">
+                {["解释这段代码", "重构前端布局", "写一个单元测试"].map((t) => (
+                  <button
+                    key={t}
+                    className="empty-chip"
+                    onClick={() => startWithPrompt(t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             <MessageStream messages={currentMessages} live={live ?? undefined} />
@@ -468,6 +493,7 @@ export default function ChatPage() {
             onStop={stopStreaming}
             disabled={!currentSessionId || !connected}
             streaming={streaming}
+            prefill={prefill}
           />
           <div ref={messagesEndRef} />
         </main>
@@ -536,17 +562,34 @@ export default function ChatPage() {
         .chat-header {
           display: flex;
           align-items: center;
-          gap: 12px;
-          padding: 10px 16px;
+          justify-content: space-between;
+          height: 52px;
+          padding: 0 16px;
           border-bottom: 1px solid var(--border);
           background: var(--bg-panel);
           -webkit-app-region: drag;
+          flex-shrink: 0;
         }
-        .header-btn {
+        /* 三段式：左侧导航组 / 右侧状态组 */
+        .header-left {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
           -webkit-app-region: no-drag;
-          font-size: 18px;
-          padding: 6px 8px;
-          border-radius: 6px;
+        }
+        .header-right {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
+          -webkit-app-region: no-drag;
+        }
+        /* 图标按钮统一 32×32、圆角 8 */
+        .header-btn {
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
           color: var(--text-secondary);
           display: flex;
           align-items: center;
@@ -556,57 +599,60 @@ export default function ChatPage() {
           background: var(--bg-element);
           color: var(--text);
         }
-        .header-btn.new-chat {
-          width: 32px;
-          height: 32px;
-        }
-        .hdr-mode {
-          -webkit-app-region: no-drag;
-          font-size: 12px;
-          font-weight: 500;
-          padding: 6px 12px;
-          border-radius: 999px;
-          border: 1px solid var(--border);
-          background: var(--bg-element);
-          color: var(--text-secondary);
-          cursor: pointer;
-          transition: all 0.15s;
-          white-space: nowrap;
-        }
-        .hdr-mode:hover {
-          border-color: var(--border-active);
-          color: var(--text);
-        }
-        .hdr-mode.no-confirm {
-          background: color-mix(in srgb, var(--success) 18%, transparent);
-          border-color: var(--success);
-          color: var(--success);
-        }
         .chat-title {
-          flex: 1;
           font-size: 14px;
           font-weight: 500;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
           color: var(--text);
+        }
+        /* 连接状态 chip：点 + 文字，可读性优于孤立圆点 */
+        .conn-chip {
           display: flex;
           align-items: center;
           gap: 6px;
+          height: 28px;
+          padding: 0 10px;
+          border-radius: 999px;
+          background: var(--bg-element);
+          font-size: 12px;
+          color: var(--text-secondary);
+          white-space: nowrap;
         }
-        .chat-title :global(svg) {
-          color: var(--primary);
-        }
-        .conn {
-          width: 8px;
-          height: 8px;
+        .conn-dot {
+          width: 6px;
+          height: 6px;
           border-radius: 50%;
+          background: var(--error);
         }
-        .conn.on {
+        .conn-chip.on .conn-dot {
           background: var(--success);
         }
-        .conn.off {
-          background: var(--error);
+        /* 确认模式 chip：盾牌图标 + 文字；放行态转警示色 */
+        .mode-chip {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          height: 28px;
+          padding: 0 10px;
+          border-radius: 999px;
+          border: 1px solid var(--border);
+          background: transparent;
+          color: var(--text-secondary);
+          font-size: 12px;
+          cursor: pointer;
+          transition: all 0.15s;
+          white-space: nowrap;
+        }
+        .mode-chip:hover {
+          border-color: var(--border-active);
+          color: var(--text);
+        }
+        .mode-chip.no-confirm {
+          background: color-mix(in srgb, var(--warning) 14%, transparent);
+          border-color: var(--warning);
+          color: var(--warning);
         }
         .empty-state {
           flex: 1;
@@ -614,18 +660,57 @@ export default function ChatPage() {
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          gap: 8px;
+          gap: 12px;
           color: var(--text-secondary);
         }
         .empty-state :global(svg) {
           color: var(--primary);
-          margin-bottom: 8px;
+          margin-bottom: 4px;
         }
         .empty-state h2 {
-          font-size: 28px;
+          font-size: 26px;
           color: var(--text);
           font-weight: 600;
           letter-spacing: -0.5px;
+        }
+        .empty-state p {
+          font-size: 13px;
+        }
+        .empty-cta {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          height: 40px;
+          padding: 0 18px;
+          margin-top: 4px;
+          border-radius: 10px;
+          background: var(--primary);
+          color: var(--on-primary);
+          font-size: 14px;
+          font-weight: 500;
+          transition: filter 0.15s;
+        }
+        .empty-cta:hover {
+          background: var(--primary);
+          filter: brightness(1.08);
+        }
+        .empty-chips {
+          display: flex;
+          gap: 10px;
+          margin-top: 10px;
+        }
+        .empty-chip {
+          padding: 9px 13px;
+          border-radius: 10px;
+          background: var(--bg-panel);
+          border: 1px solid var(--border);
+          font-size: 12.5px;
+          color: var(--text-secondary);
+          transition: border-color 0.15s, color 0.15s;
+        }
+        .empty-chip:hover {
+          border-color: var(--border-active);
+          color: var(--text);
         }
         .modal-mask {
           position: fixed;

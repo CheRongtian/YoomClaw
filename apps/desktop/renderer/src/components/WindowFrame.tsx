@@ -1,7 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import SpiralLogo from "./SpiralLogo";
 import {
-  SettingsIcon,
   WinMinimizeIcon,
   WinMaximizeIcon,
   WinRestoreIcon,
@@ -9,17 +8,17 @@ import {
 } from "./icons";
 
 interface Props {
-  onOpenSettings: () => void;
   children: ReactNode;
 }
 
 /**
  * 桌面应用窗口框架 —— Windows 平台惯例布局
  * - 左侧：应用图标 + 名称（可拖拽，双击最大化/还原）
- * - 右侧：设置 | 最小化 / 最大化·还原 / 关闭（46px 方形按钮，关闭悬停变红）
+ * - 右侧：最小化 / 最大化·还原 / 关闭（46px 方形按钮，关闭悬停变红）
+ * - 设置入口已移至侧栏底部用户区，标题栏只保留窗口系统控件
  * - 最大化状态由主进程 window:state 事件同步，图标随之切换
  */
-export default function WindowFrame({ onOpenSettings, children }: Props) {
+export default function WindowFrame({ children }: Props) {
   const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
   const [maximized, setMaximized] = useState(false);
 
@@ -60,17 +59,6 @@ export default function WindowFrame({ onOpenSettings, children }: Props) {
         </div>
 
         <div className="tb-actions">
-          <button
-            className="tb-btn"
-            onClick={onOpenSettings}
-            title="设置"
-            aria-label="设置"
-          >
-            <SettingsIcon size={15} />
-          </button>
-
-          <span className="tb-sep" />
-
           <button
             className="win-btn"
             onClick={() => claw?.minimize()}
@@ -146,26 +134,6 @@ export default function WindowFrame({ onOpenSettings, children }: Props) {
           display: flex;
           align-items: stretch;
           -webkit-app-region: no-drag;
-          flex-shrink: 0;
-        }
-        /* 设置按钮：常规工具按钮观感，和系统控件区用竖线隔开 */
-        .tb-btn {
-          width: 38px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: var(--text-muted);
-          border-radius: 0;
-          transition: background 0.12s, color 0.12s;
-        }
-        .tb-btn:hover {
-          background: var(--bg-element);
-          color: var(--text);
-        }
-        .tb-sep {
-          width: 1px;
-          margin: 8px 4px 8px 0;
-          background: var(--border);
           flex-shrink: 0;
         }
         /* 系统窗口控件：Windows 惯用 46px 宽、无圆角、贴边 */

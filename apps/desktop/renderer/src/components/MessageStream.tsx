@@ -6,7 +6,7 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import SpiralLogo from "./SpiralLogo";
-import { UserIcon, WrenchIcon } from "./icons";
+import { WrenchIcon } from "./icons";
 
 export interface ToolCard {
   callId: string;
@@ -67,12 +67,13 @@ function MessageRow({ message }: { message: ChatMessage }) {
 
   return (
     <div className={`row ${isUser ? "user" : "assistant"}`}>
-      <div className="avatar">
-        {isUser ? <UserIcon size={16} /> : <SpiralLogo size={18} />}
-      </div>
+      {!isUser && (
+        <div className="avatar">
+          <SpiralLogo size={18} />
+        </div>
+      )}
       <div className="bubble">
-        <div className="role">{isUser ? "You" : "YoomClaw"}</div>
-        <div className={`content ${""}`}>
+        <div className="content">
           {isUser ? (
             <div className="user-text">{content}</div>
           ) : (
@@ -107,47 +108,35 @@ function MessageRow({ message }: { message: ChatMessage }) {
           display: flex;
           gap: 12px;
           max-width: 860px;
-          margin: 0 auto 16px;
-          padding: 0 20px;
+          margin: 0 auto 18px;
+          padding: 0 24px;
           align-items: flex-start;
         }
         .row.user {
-          flex-direction: row-reverse;
+          justify-content: flex-end;
         }
+        /* AI 侧只留品牌标记，不再套圆形底色 */
         .avatar {
-          font-size: 18px;
-          width: 30px;
-          height: 30px;
+          width: 24px;
+          height: 24px;
           display: flex;
           align-items: center;
           justify-content: center;
-          background: var(--bg-element);
-          border-radius: 50%;
           flex-shrink: 0;
           color: var(--primary);
+          margin-top: 2px;
         }
-        .row.user .avatar {
-          color: var(--text-secondary);
-        }
+        /* AI 回复平铺（工作伙伴式文本流），用户消息才用气泡 */
         .bubble {
-          max-width: calc(100% - 54px);
-          padding: 10px 14px;
-          border-radius: 14px;
-          background: var(--assistant-bubble-bg);
-          border: 1px solid var(--assistant-bubble-border);
+          max-width: calc(100% - 40px);
+          padding: 2px 0;
         }
         .row.user .bubble {
-          background: var(--user-bubble-bg);
-          color: var(--user-bubble-fg);
-        }
-        .role {
-          font-size: 11px;
-          color: var(--text-muted);
-          margin-bottom: 4px;
-          letter-spacing: 0.3px;
-        }
-        .row.user .role {
-          color: color-mix(in srgb, var(--user-bubble-fg) 72%, transparent);
+          background: var(--bg-element);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 10px 14px;
+          color: var(--text);
         }
         .content {
           font-size: 14.5px;
@@ -218,8 +207,6 @@ function LiveRow({ live }: { live: LiveAssistant }) {
         <SpiralLogo size={18} />
       </div>
       <div className="bubble">
-        <div className="role">YoomClaw</div>
-
         {live.progress && (
           <div className="progress">
             <div className="progress-label">
@@ -273,23 +260,18 @@ function LiveRow({ live }: { live: LiveAssistant }) {
 
       <style jsx>{`
         .avatar {
-          font-size: 18px;
-          width: 30px;
-          height: 30px;
+          width: 24px;
+          height: 24px;
           display: flex;
           align-items: center;
           justify-content: center;
-          background: var(--bg-element);
-          border-radius: 50%;
           flex-shrink: 0;
           color: var(--primary);
+          margin-top: 2px;
         }
         .bubble {
-          max-width: calc(100% - 54px);
-          padding: 10px 14px;
-          border-radius: 14px;
-          background: var(--assistant-bubble-bg);
-          border: 1px solid var(--assistant-bubble-border);
+          max-width: calc(100% - 40px);
+          padding: 2px 0;
         }
         .progress {
           margin-bottom: 10px;

@@ -1,6 +1,11 @@
+import { useState } from "react";
 import type { SessionSummary } from "@yoomclaw/protocol";
-import SpiralLogo from "./SpiralLogo";
-import { PlusIcon, CloseIcon, TrashIcon } from "./icons";
+import {
+  PlusIcon,
+  TrashIcon,
+  SearchIcon,
+  SettingsIcon,
+} from "./icons";
 
 interface Props {
   sessions: SessionSummary[];
@@ -10,6 +15,7 @@ interface Props {
   onCreate: () => void;
   onDelete: (id: string) => void;
   onClose: () => void;
+  onOpenSettings: () => void;
 }
 
 export default function SessionSidebar({
@@ -20,35 +26,45 @@ export default function SessionSidebar({
   onCreate,
   onDelete,
   onClose,
+  onOpenSettings,
 }: Props) {
+  const [query, setQuery] = useState("");
+  const keyword = query.trim().toLowerCase();
+  const filtered = keyword
+    ? sessions.filter((s) => (s.title || "").toLowerCase().includes(keyword))
+    : sessions;
+
   return (
     <>
       {open && <div className="sidebar-overlay" onClick={onClose} />}
       <aside className={`sidebar ${open ? "open" : "closed"}`}>
-        <div className="sidebar-header">
-          <div className="brand">
-            <span className="brand-logo">
-              <SpiralLogo size={22} />
-            </span>
-            <span className="brand-name">YoomClaw</span>
-          </div>
-          <button className="close-btn" onClick={onClose} title="收起侧栏">
-            <CloseIcon size={16} />
-          </button>
-        </div>
-
         <button className="new-session-btn" onClick={onCreate}>
           <span className="plus">
-            <PlusIcon size={18} />
+            <PlusIcon size={16} />
           </span>
           <span>新建对话</span>
         </button>
 
+        <div className="search-box">
+          <SearchIcon size={16} />
+          <input
+            className="search-input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索对话"
+            aria-label="搜索对话"
+          />
+        </div>
+
+        <div className="section-label">最近对话</div>
+
         <div className="session-list">
-          {sessions.length === 0 ? (
-            <p className="empty-hint">暂无对话</p>
+          {filtered.length === 0 ? (
+            <p className="empty-hint">
+              {keyword ? "没有匹配的对话" : "暂无对话"}
+            </p>
           ) : (
-            sessions.map((s) => (
+            filtered.map((s) => (
               <div
                 key={s.id}
                 className={`session-item ${s.id === currentId ? "active" : ""}`}
@@ -87,73 +103,94 @@ export default function SessionSidebar({
             <span className="dot" />
             <span>本地运行 · 数据不上传</span>
           </div>
+          <button className="settings-btn" onClick={onOpenSettings}>
+            <SettingsIcon size={20} />
+            <span>设置</span>
+          </button>
         </div>
       </aside>
 
       <style jsx>{`
         .sidebar-overlay { display: none; }
         .sidebar {
-          width: 260px;
+          width: 264px;
           flex-shrink: 0;
           background: var(--bg-panel);
           border-right: 1px solid var(--border);
           display: flex;
           flex-direction: column;
+          gap: 10px;
+          padding: 12px;
           transition: width 0.2s ease;
           overflow: hidden;
         }
         .sidebar.closed {
           width: 0;
+          padding: 12px 0;
           border-right: none;
         }
-        .sidebar-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 14px 14px 10px;
-        }
-        .brand {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .brand-logo {
-          display: flex;
-          color: var(--primary);
-        }
-        .brand-name {
-          font-size: 17px;
-          font-weight: 600;
-          letter-spacing: -0.3px;
-        }
-        .close-btn {
-          padding: 4px 8px;
-          font-size: 13px;
-          color: var(--text-muted);
-          display: flex;
-        }
+        /* 唯一主操作：实心主色按钮 */
         .new-session-btn {
-          margin: 0 12px 10px;
-          padding: 10px 12px;
-          background: var(--bg-element);
+          width: 100%;
+          height: 38px;
+          background: var(--primary);
           border-radius: 8px;
-          color: var(--text);
+          color: var(--on-primary);
           font-weight: 500;
           font-size: 13.5px;
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
           justify-content: center;
+          flex-shrink: 0;
+          transition: filter 0.15s;
         }
         .new-session-btn:hover {
-          background: var(--border);
+          background: var(--primary);
+          filter: brightness(1.08);
         }
         .new-session-btn .plus {
           display: flex;
         }
+        .search-box {
+          height: 34px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 0 10px;
+          background: var(--bg-element);
+          border-radius: 8px;
+          color: var(--text-muted);
+          flex-shrink: 0;
+        }
+        .search-input {
+          flex: 1;
+          min-width: 0;
+          border: none;
+          background: transparent;
+          color: var(--text);
+          font-family: inherit;
+          font-size: 12.5px;
+          outline: none;
+        }
+        .search-input::placeholder {
+          color: var(--text-muted);
+        }
+        .section-label {
+          font-size: 11px;
+          font-weight: 500;
+          letter-spacing: 0.5px;
+          color: var(--text-muted);
+          padding: 0 2px;
+          flex-shrink: 0;
+        }
         .session-list {
           flex: 1;
           overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          margin: 0 -6px;
           padding: 0 6px;
         }
         .empty-hint {
@@ -166,10 +203,9 @@ export default function SessionSidebar({
           display: flex;
           align-items: center;
           gap: 8px;
-          padding: 10px 10px;
+          padding: 10px;
           border-radius: 8px;
           cursor: pointer;
-          margin-bottom: 2px;
         }
         .session-item:hover { background: var(--bg-element); }
         .session-item.active { background: var(--bg-element); }
@@ -196,21 +232,43 @@ export default function SessionSidebar({
         }
         .session-item:hover .delete-btn { opacity: 1; }
         .sidebar-footer {
-          padding: 10px 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding-top: 10px;
           border-top: 1px solid var(--border);
-          font-size: 11.5px;
-          color: var(--text-muted);
+          flex-shrink: 0;
         }
         .footer-line {
           display: flex;
           align-items: center;
           gap: 6px;
+          padding: 0 10px;
+          font-size: 11px;
+          color: var(--text-muted);
         }
         .dot {
           width: 6px;
           height: 6px;
           border-radius: 50%;
           background: var(--success);
+        }
+        /* 设置入口：从窗口标题栏移至侧栏底部用户区 */
+        .settings-btn {
+          width: 100%;
+          height: 36px;
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          padding: 0 10px;
+          border-radius: 8px;
+          font-size: 13px;
+          color: var(--text-secondary);
+          transition: background 0.14s, color 0.14s;
+        }
+        .settings-btn:hover {
+          background: var(--bg-element);
+          color: var(--text);
         }
         @media (max-width: 768px) {
           .sidebar {
@@ -222,7 +280,8 @@ export default function SessionSidebar({
           }
           .sidebar.closed {
             transform: translateX(-100%);
-            width: 260px;
+            width: 264px;
+            padding: 12px;
           }
           .sidebar-overlay {
             display: block;
