@@ -5,6 +5,9 @@
  * These types define the contract between Gateway, Agent, Channels, and UI.
  */
 
+export * from "./file-policy.js";
+import type { FileInputKind } from "./file-policy.js";
+
 // ===== Chat Message Types =====
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
@@ -38,6 +41,8 @@ export type ContentPart =
 export interface ChatMessage {
   role: MessageRole;
   content: string | ContentPart[];
+  /** Internal-only context for the Agent; never persisted or rendered by the UI. */
+  agentContext?: string | ContentPart[];
   /** Optional name for tool messages. */
   name?: string;
   /** Tool call id, if this is a tool response. */
@@ -62,6 +67,10 @@ export interface Session {
   runs?: SessionRun[];
   /** Optional metadata. */
   meta?: Record<string, unknown>;
+  /** Hide the session from the default recent-session view without deleting it. */
+  archived?: boolean;
+  /** Keep the session at the top of the recent-session view. */
+  pinned?: boolean;
 }
 
 export type SessionRunStatus =
@@ -108,6 +117,14 @@ export type SSEEvent =
 export interface FileUploadRequest {
   url: string;
   source: string;
+  /** Original renderer filename, used only to preserve a safe extension. */
+  fileName?: string;
+  /** Browser MIME type, if available. */
+  mimeType?: string;
+  /** Normalized upload category derived from the filename. */
+  kind?: FileInputKind;
+  /** Original local byte size, when the caller has it. */
+  sizeBytes?: number;
 }
 
 export interface FileUploadResponse {
@@ -123,6 +140,15 @@ export interface FileUploadResponse {
   createAt: number;
   updateAt: number;
   deleted: boolean;
+}
+
+export interface PdfReadResponse {
+  ok: true;
+  fileName: string;
+  pages: number;
+  extractedPages: number;
+  text: string;
+  truncated: boolean;
 }
 
 // ===== Tool / Skill Types =====
@@ -275,6 +301,8 @@ export interface SessionSummary {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  archived?: boolean;
+  pinned?: boolean;
 }
 
 // ===== Agent Configuration =====
@@ -296,6 +324,10 @@ export interface AgentConfig {
   toolsets?: ToolsetId[];
   /** Prompt-driven agent engine. */
   mode?: "legacy" | "hermes";
+  /** Where the main agent's behavior prompt is maintained. */
+  promptMode?: "provider" | "local";
+  /** Run the separate provider-backed memory review after successful tasks. */
+  autoMemoryReview?: boolean;
   /** Workspace execution policy. */
   safetyMode?: "workspace-auto" | "confirm";
   /** Maximum ReAct tool rounds. */
@@ -308,6 +340,8 @@ export interface AgentConfig {
 
 export interface RuntimeConfig {
   mode: "legacy" | "hermes";
+  promptMode: "provider" | "local";
+  autoMemoryReview: boolean;
   workspace: string;
   dataDir: string;
   toolsets: ToolsetId[];

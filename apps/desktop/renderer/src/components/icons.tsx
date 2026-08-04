@@ -57,6 +57,151 @@ export function CloseIcon(p: IconProps) {
   );
 }
 
+export function EditIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="m4 16.5-.8 3.8 3.8-.8L18.5 8a2.1 2.1 0 0 0-3-3L4 16.5Z" />
+      <path d="m13.8 6.2 4 4" />
+    </Svg>
+  );
+}
+
+export function CopyIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="8" y="8" width="11" height="12" rx="2" />
+      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2" />
+    </Svg>
+  );
+}
+
+export function RefreshIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M20 11a8 8 0 0 0-14.8-4L3 10" />
+      <polyline points="3 5 3 10 8 10" />
+      <path d="M4 13a8 8 0 0 0 14.8 4L21 14" />
+      <polyline points="21 19 21 14 16 14" />
+    </Svg>
+  );
+}
+
+export function PinIcon({ filled = false, ...props }: IconProps & { filled?: boolean }) {
+  return (
+    <Svg {...props}>
+      <path d="M5 5h14M12 19V8" />
+      <path d="m8 12 4-4 4 4" fill={filled ? "currentColor" : "none"} />
+    </Svg>
+  );
+}
+
+export function TaskIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="4" y="3" width="16" height="18" rx="2" />
+      <path d="M8 8h8M8 12h8M8 16h4" />
+      <path d="m15 16 1.5 1.5L20 14" />
+    </Svg>
+  );
+}
+
+export function ExportIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M12 3v12m0 0 4-4m-4 4-4-4" />
+      <path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
+    </Svg>
+  );
+}
+
+export function FileIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M6 3h8l4 4v14H6z" />
+      <path d="M14 3v5h5M9 13h6M9 17h5" />
+    </Svg>
+  );
+}
+
+export function ChevronRightIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <polyline points="9 5 16 12 9 19" />
+    </Svg>
+  );
+}
+
+export function ChevronLeftIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <polyline points="15 5 8 12 15 19" />
+    </Svg>
+  );
+}
+
+export function GitBranchIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="18" cy="19" r="2" />
+      <circle cx="18" cy="5" r="2" />
+      <path d="M6 7v3a5 5 0 0 0 5 5h5M18 7v10" />
+    </Svg>
+  );
+}
+
+export function TerminalIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="m7 9 3 3-3 3m5 0h4" />
+    </Svg>
+  );
+}
+
+export function CircleIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="8" />
+    </Svg>
+  );
+}
+
+export function CircleCheckIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="8 12 11 15 16.5 9" />
+    </Svg>
+  );
+}
+
+export function CircleXIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m9 9 6 6m0-6-6 6" />
+    </Svg>
+  );
+}
+
+export function LoaderIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M12 3a9 9 0 1 0 9 9" />
+    </Svg>
+  );
+}
+
+export function ClockIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </Svg>
+  );
+}
+
 export function TrashIcon(p: IconProps) {
   return (
     <Svg {...p}>

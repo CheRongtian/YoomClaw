@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("yoomclaw", {
   hideToTray: () => ipcRenderer.invoke("hide-to-tray"),
   quit: () => ipcRenderer.invoke("quit"),
   isMaximized: () => ipcRenderer.invoke("window:is-maximized"),
+  focusWindow: () => ipcRenderer.invoke("window:focus"),
 
   // 应用设置（持久化在主进程 userData/settings.json）
   getSettings: () => ipcRenderer.invoke("settings:get"),
@@ -26,6 +27,7 @@ contextBridge.exposeInMainWorld("yoomclaw", {
   // 应用信息 / 数据目录
   getAppInfo: () => ipcRenderer.invoke("app:info"),
   openDataDir: () => ipcRenderer.invoke("app:open-data-dir"),
+  saveTextFile: (payload) => ipcRenderer.invoke("file:save-text", payload),
 
   // 系统通知 (AI 回复完成时)
   notify: (title, body) => ipcRenderer.invoke("notify", { title, body }),

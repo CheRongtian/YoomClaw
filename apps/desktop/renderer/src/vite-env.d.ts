@@ -19,6 +19,7 @@ export interface YoomClawApi {
   hideToTray(): void;
   quit(): void;
   isMaximized(): Promise<boolean>;
+  focusWindow(): Promise<void>;
 
   getSettings(): Promise<AppSettings>;
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
@@ -27,6 +28,7 @@ export interface YoomClawApi {
 
   getAppInfo(): Promise<AppInfo>;
   openDataDir(): Promise<void>;
+  saveTextFile(payload: { fileName: string; content: string }): Promise<string | null>;
 
   notify(title: string, body: string): void;
   platform: string;

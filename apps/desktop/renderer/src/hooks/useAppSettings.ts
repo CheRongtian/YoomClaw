@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings } from "../types";
 
 /**
@@ -10,6 +10,13 @@ export function useAppSettings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [available, setAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
+  const aliveRef = useRef(true);
+  const updateRevisionRef = useRef(0);
+  const updateQueueRef = useRef(Promise.resolve());
+
+  useEffect(() => () => {
+    aliveRef.current = false;
+  }, []);
 
   useEffect(() => {
     const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
@@ -37,14 +44,23 @@ export function useAppSettings() {
   const update = useCallback(async (patch: Partial<AppSettings>) => {
     const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
     if (!claw?.updateSettings) return;
+    const revision = ++updateRevisionRef.current;
     // 乐观更新：开关手感要跟手，主进程返回后再对齐一次真实值
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
-    try {
-      const next = await claw.updateSettings(patch);
-      setSettings(next);
-    } catch {
-      claw.getSettings().then(setSettings).catch(() => {});
-    }
+    const operation = updateQueueRef.current.then(async () => {
+      try {
+        const next = await claw.updateSettings(patch);
+        if (aliveRef.current && revision === updateRevisionRef.current) setSettings(next);
+      } catch {
+        if (!aliveRef.current || revision !== updateRevisionRef.current) return;
+        try {
+          const next = await claw.getSettings();
+          if (aliveRef.current && revision === updateRevisionRef.current) setSettings(next);
+        } catch {}
+      }
+    });
+    updateQueueRef.current = operation.then(() => undefined, () => undefined);
+    await operation;
   }, []);
 
   return { settings, available, loading, update };

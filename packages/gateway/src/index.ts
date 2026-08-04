@@ -6,10 +6,16 @@
  *   GET  /api/sessions                  - List sessions
  *   POST /api/sessions                  - Create session
  *   GET  /api/sessions/:id              - Get session
+ *   PATCH /api/sessions/:id             - Rename session
+ *   POST  /api/sessions/:id/branch      - Truncate and branch a session
  *   DELETE /api/sessions/:id            - Delete session
  *   POST /api/sessions/:id/messages     - Send message (SSE streaming AgentEvent)
  *   POST /api/upload/file               - Upload file (proxied to LLM provider)
- *   GET  /api/tools                     - List builtin tool definitions
+  *   POST /api/files/read-pdf             - Extract PDF text locally
+  *   GET  /api/tools                     - List builtin tool definitions
+ *   GET  /api/workspace/tree             - List safe workspace entries
+ *   GET  /api/workspace/file             - Read a safe text workspace file
+ *   GET  /api/workspace/git              - Read-only Git status and diff snapshot
  *
  * WebSocket:
  *   ws://host:port/ws - Bidirectional channel for chat (AgentEvent stream + 工具确认)
@@ -17,7 +23,8 @@
 
 import http from "node:http";
 import fs from "node:fs";
-import path from "node:path";
+import pathModule from "node:path";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -30,15 +37,37 @@ import {
   SkillStore,
   ChromeCdpController,
   loadRuntimeConfig,
+  resolveInWorkspace,
   type BuiltinTool,
   type ConfirmFn,
 } from "@yoomclaw/agent-core";
-import { JimoProvider, JimoVisionProvider } from "@yoomclaw/llm-provider";
+import {
+  ImageHostClient,
+  dataUrlMimeType,
+  isHostableDataUrl,
+  JimoProvider,
+  JimoVisionProvider,
+  type ImageHostConfig,
+} from "@yoomclaw/llm-provider";
+import {
+  isPdfDataUrl,
+  LocalPdfReader,
+  LOCAL_PDF_MAX_BYTES,
+} from "./pdf-reader.js";
+import {
+  classifyFileInput,
+  countAttachmentParts,
+  FILE_INPUT_RULES,
+  MAX_FILES_PER_MESSAGE,
+} from "@yoomclaw/protocol";
 import type {
   ChatMessage,
   SessionSummary,
   GatewayMessage,
+  FileUploadRequest,
   FileUploadResponse,
+  PdfReadResponse,
+  FileInputDescriptor,
   AgentEvent,
   RuntimeConfig,
   SessionRunStatus,
@@ -70,6 +99,8 @@ export interface GatewayConfig {
     shareId: string;
     authorization: string;
   };
+  /** Existing self-hosted image host used before the vision bot. */
+  imageHostConfig?: ImageHostConfig;
 }
 
 // ===== Gateway Server =====
@@ -98,11 +129,21 @@ export class Gateway {
   private memoryStore: MemoryStore;
   private skillStore: SkillStore;
   private browser: ChromeCdpController;
+  private imageHost?: ImageHostClient;
+  private pdfReader: LocalPdfReader;
   /** callId → 等待用户确认的裁决。 */
   private pendingConfirm = new Map<string, PendingConfirm>();
   /** 兼容旧客户端的确认模式状态；高风险确认不会被该开关绕过。 */
   private confirmModes = new Map<WebSocket, "confirm" | "no-confirm">();
   private activeRuns = new Map<string, ActiveRun>();
+
+  private abortRunsForSession(sessionId: string): void {
+    for (const [runId, active] of this.activeRuns) {
+      if (active.sessionId !== sessionId) continue;
+      active.controller.abort();
+      this.activeRuns.delete(runId);
+    }
+  }
 
   constructor(config: GatewayConfig) {
     this.config = config;
@@ -112,7 +153,7 @@ export class Gateway {
       dataDir:
         config.runtime?.dataDir ??
         config.dataDir ??
-        path.join(config.workspace, ".claw-data"),
+        pathModule.join(config.workspace, ".claw-data"),
     });
     this.promptStore = new PromptStore(this.runtime.workspace, this.runtime.dataDir);
     this.memoryStore = new MemoryStore(this.runtime.workspace, this.runtime.dataDir);
@@ -126,6 +167,11 @@ export class Gateway {
 
     const provider = new JimoProvider(config.jimoConfig);
     const visionConfig = config.visionConfig ?? readVisionConfig(process.env);
+    const imageHostConfig = config.imageHostConfig ?? readImageHostConfig(process.env);
+    this.imageHost = imageHostConfig
+      ? new ImageHostClient(imageHostConfig)
+      : undefined;
+    this.pdfReader = new LocalPdfReader();
     this.runtime.visionEnabled = Boolean(visionConfig?.shareId && visionConfig.authorization);
     this.persistRuntimeConfig();
     const vision = visionConfig?.shareId && visionConfig.authorization
@@ -135,6 +181,8 @@ export class Gateway {
       {
         ...config.agentConfig,
         mode: config.agentConfig.mode ?? this.runtime.mode,
+        promptMode: config.agentConfig.promptMode ?? this.runtime.promptMode,
+        autoMemoryReview: config.agentConfig.autoMemoryReview ?? this.runtime.autoMemoryReview,
         toolsets: config.agentConfig.toolsets ?? this.runtime.toolsets,
         safetyMode: config.agentConfig.safetyMode ?? this.runtime.safetyMode,
       },
@@ -303,6 +351,10 @@ export class Gateway {
         return this.sendJson(res, 200, this.sessions.list());
       }
 
+      if (path === "/api/sessions/search" && req.method === "GET") {
+        return this.sendJson(res, 200, this.sessions.search(url.searchParams.get("q") ?? ""));
+      }
+
       if (path === "/api/sessions" && req.method === "POST") {
         const body = (await readJsonBody(req)) as { title?: string };
         const session = this.sessions.create(body?.title);
@@ -312,6 +364,8 @@ export class Gateway {
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
           messageCount: 0,
+          archived: session.archived === true,
+          pinned: session.pinned === true,
         };
         return this.sendJson(res, 201, summary);
       }
@@ -324,10 +378,74 @@ export class Gateway {
           if (!session) return this.sendJson(res, 404, { error: "Not found" });
           return this.sendJson(res, 200, session);
         }
+        if (req.method === "PATCH") {
+          const body = (await readJsonBody(req)) as {
+            title?: unknown;
+            archived?: unknown;
+            pinned?: unknown;
+          };
+          const title = typeof body.title === "string" ? body.title.trim() : "";
+          const hasTitle = typeof body.title === "string";
+          const hasArchived = typeof body.archived === "boolean";
+          const hasPinned = typeof body.pinned === "boolean";
+          if (!hasTitle && !hasArchived && !hasPinned) {
+            return this.sendJson(res, 400, { error: "title, archived or pinned is required" });
+          }
+          if (hasTitle && !title) return this.sendJson(res, 400, { error: "title is required" });
+          if (hasTitle && title.length > 120) {
+            return this.sendJson(res, 400, { error: "title must be at most 120 characters" });
+          }
+          const updated = hasTitle
+            ? this.sessions.rename(id, title)
+            : this.sessions.get(id);
+          if (!updated) return this.sendJson(res, 404, { error: "Not found" });
+          const patched = hasArchived || hasPinned
+            ? this.sessions.setFlags(id, {
+              archived: hasArchived ? body.archived as boolean : undefined,
+              pinned: hasPinned ? body.pinned as boolean : undefined,
+            })
+            : updated;
+          if (!patched) return this.sendJson(res, 404, { error: "Not found" });
+          const summary = this.sessions.list().find((item) => item.id === id);
+          return this.sendJson(res, 200, summary ?? {
+            id: patched.id,
+            title: patched.title,
+            createdAt: patched.createdAt,
+            updatedAt: patched.updatedAt,
+            messageCount: patched.messages.length,
+            archived: patched.archived === true,
+            pinned: patched.pinned === true,
+          } satisfies SessionSummary);
+        }
         if (req.method === "DELETE") {
+          this.abortRunsForSession(id);
           const deleted = this.sessions.delete(id);
           return this.sendJson(res, deleted ? 204 : 404, deleted ? null : { error: "Not found" });
         }
+      }
+
+      const branchMatch = path.match(/^\/api\/sessions\/([^/]+)\/branch$/);
+      if (branchMatch && req.method === "POST") {
+        const id = branchMatch[1];
+        const body = (await readJsonBody(req)) as { messageIndex?: unknown };
+        const messageIndex = typeof body.messageIndex === "number" ? body.messageIndex : NaN;
+        const session = this.sessions.get(id);
+        if (!session) return this.sendJson(res, 404, { error: "Not found" });
+        if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex > session.messages.length) {
+          return this.sendJson(res, 400, { error: "messageIndex is out of range" });
+        }
+        const branched = this.sessions.truncateMessages(id, messageIndex);
+        if (!branched) return this.sendJson(res, 404, { error: "Not found" });
+        const summary = this.sessions.list().find((item) => item.id === id);
+        return this.sendJson(res, 200, summary ?? {
+          id: branched.id,
+          title: branched.title,
+          createdAt: branched.createdAt,
+          updatedAt: branched.updatedAt,
+          messageCount: branched.messages.length,
+          archived: branched.archived === true,
+          pinned: branched.pinned === true,
+        } satisfies SessionSummary);
       }
 
       const msgMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);
@@ -339,8 +457,82 @@ export class Gateway {
         return this.handleUploadFile(req, res);
       }
 
+      if (path === "/api/files/read-pdf" && req.method === "POST") {
+        return this.handleReadPdf(req, res, url.searchParams.get("fileName"));
+      }
+
       if (path === "/api/tools" && req.method === "GET") {
         return this.sendJson(res, 200, this.tools.map((t) => t.definition));
+      }
+
+      if (path === "/api/workspace/tree" && req.method === "GET") {
+        const relativePath = url.searchParams.get("path") ?? ".";
+        const resolved = resolveInWorkspace(this.runtime.workspace, relativePath);
+        if (!resolved.ok) return this.sendJson(res, 403, { error: resolved.reason, code: "WORKSPACE_PATH_BLOCKED" });
+        try {
+          const stat = fs.statSync(resolved.resolved);
+          if (!stat.isDirectory()) return this.sendJson(res, 400, { error: "path is not a directory" });
+          const entries = fs.readdirSync(resolved.resolved, { withFileTypes: true })
+            .filter((entry) => !entry.name.startsWith(".") || entry.name === ".github")
+            .slice(0, 200)
+            .map((entry) => {
+              const entryPath = pathModule.join(resolved.resolved, entry.name);
+              let size: number | undefined;
+              if (entry.isFile()) {
+                try { size = fs.statSync(entryPath).size; } catch { /* best effort */ }
+              }
+              return { name: entry.name, type: entry.isDirectory() ? "directory" : "file", size };
+            })
+            .sort((a, b) => Number(b.type === "directory") - Number(a.type === "directory") || a.name.localeCompare(b.name));
+          return this.sendJson(res, 200, { path: relativePath, entries });
+        } catch (error) {
+          return this.sendJson(res, 404, { error: error instanceof Error ? error.message : "Directory not found" });
+        }
+      }
+
+      if (path === "/api/workspace/file" && req.method === "GET") {
+        const relativePath = url.searchParams.get("path") ?? "";
+        const resolved = resolveInWorkspace(this.runtime.workspace, relativePath);
+        if (!resolved.ok) return this.sendJson(res, 403, { error: resolved.reason, code: "WORKSPACE_PATH_BLOCKED" });
+        try {
+          const stat = fs.statSync(resolved.resolved);
+          if (!stat.isFile()) return this.sendJson(res, 400, { error: "path is not a file" });
+          if (stat.size > 1024 * 1024) return this.sendJson(res, 413, { error: "file is too large to preview" });
+          return this.sendJson(res, 200, {
+            path: relativePath,
+            content: fs.readFileSync(resolved.resolved, "utf8"),
+          });
+        } catch (error) {
+          return this.sendJson(res, 404, { error: error instanceof Error ? error.message : "File not found" });
+        }
+      }
+
+      if (path === "/api/workspace/git" && req.method === "GET") {
+        const resolved = resolveInWorkspace(this.runtime.workspace, ".");
+        if (!resolved.ok) return this.sendJson(res, 403, { error: resolved.reason, code: "WORKSPACE_PATH_BLOCKED" });
+        const runGit = (args: string[]): string => execFileSync("git", args, {
+          cwd: resolved.resolved,
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 512 * 1024,
+          windowsHide: true,
+        }) as string;
+        try {
+          return this.sendJson(res, 200, {
+            available: true,
+            branch: runGit(["branch", "--show-current"]).trim(),
+            status: runGit(["status", "--short"]),
+            diff: runGit(["diff", "--no-ext-diff", "--unified=2"]).slice(0, 80_000),
+          });
+        } catch (error) {
+          return this.sendJson(res, 200, {
+            available: false,
+            error: error instanceof Error ? error.message : "Git is not available",
+            branch: "",
+            status: "",
+            diff: "",
+          });
+        }
       }
 
       // Static file serving (optional, for desktop renderer UI in production)
@@ -351,9 +543,10 @@ export class Gateway {
       return this.sendJson(res, 404, { error: "Not found", path });
     } catch (err) {
       console.error("[Gateway] HTTP error:", err);
-      return this.sendJson(res, 500, {
-        error: "Internal server error",
-        message: err instanceof Error ? err.message : String(err),
+      const status = err instanceof RequestBodyTooLargeError ? 413 : 500;
+      return this.sendJson(res, status, {
+        error: status === 413 ? "Request body is too large" : "Internal server error",
+        code: status === 413 ? "REQUEST_BODY_TOO_LARGE" : "INTERNAL_SERVER_ERROR",
       });
     }
   }
@@ -364,13 +557,30 @@ export class Gateway {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
-    const body = (await readJsonBody(req)) as { content: string | ChatMessage["content"]; role?: string; title?: string };
+    const body = (await readJsonBody(req)) as Partial<ChatMessage>;
     const session = this.sessions.get(sessionId);
     if (!session) {
       return this.sendJson(res, 404, { error: "Session not found" });
     }
 
-    const text = textOf(body.content);
+    if (typeof body.content !== "string" && !Array.isArray(body.content)) {
+      return this.sendJson(res, 400, {
+        error: "content is required",
+        code: "INVALID_MESSAGE_CONTENT",
+      });
+    }
+    const providerContent = body.agentContext ?? body.content;
+    if (countAttachmentParts(providerContent) > MAX_FILES_PER_MESSAGE) {
+      return this.sendJson(res, 400, {
+        error: `A message may contain at most ${MAX_FILES_PER_MESSAGE} files`,
+        code: "TOO_MANY_FILES",
+      });
+    }
+    const message: ChatMessage = {
+      role: body.role ?? "user",
+      content: body.content,
+      ...(body.agentContext === undefined ? {} : { agentContext: body.agentContext }),
+    };
 
     // SSE response
     res.writeHead(200, {
@@ -390,7 +600,7 @@ export class Gateway {
     req.on("close", () => ac.abort());
 
     try {
-      for await (const ev of this.agent.run(sessionId, text, { signal: ac.signal })) {
+      for await (const ev of this.agent.run(sessionId, message, { signal: ac.signal })) {
         send("chat.event", { sessionId, event: ev });
       }
       send("chat.end", { sessionId });
@@ -408,16 +618,177 @@ export class Gateway {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
-    const body = await readJsonBody(req) as { url: string; source?: string };
-    if (!body.url) {
+    const declaredLengthHeader = req.headers["content-length"];
+    const declaredLength = declaredLengthHeader === undefined
+      ? Number.NaN
+      : Number(declaredLengthHeader);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BODY_BYTES) {
+      return this.sendJson(res, 413, {
+        error: "Request body is too large",
+        code: "REQUEST_BODY_TOO_LARGE",
+      });
+    }
+    const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES) as {
+      url?: string;
+      source?: string;
+      fileName?: string;
+      mimeType?: string;
+      kind?: FileUploadRequest["kind"];
+      sizeBytes?: number;
+    };
+    if (typeof body.url !== "string" || !body.url.trim()) {
       return this.sendJson(res, 400, { error: "url is required" });
     }
-    const provider = new JimoProvider(this.config.jimoConfig);
-    const result: FileUploadResponse = await provider.uploadFile({
-      url: body.url,
+
+    const inputUrl = body.url.trim();
+    const dataMimeType = dataUrlMimeType(inputUrl);
+    const inferredFileName = body.fileName?.trim() ||
+      (dataMimeType ? `upload.${extensionForMimeType(dataMimeType)}` : undefined);
+    const dataSizeBytes = dataUrlByteLength(inputUrl);
+    if (inputUrl.startsWith("data:")) {
+      if (!dataMimeType || dataSizeBytes === undefined) {
+        return this.sendJson(res, 400, {
+          error: "A valid base64 data URL is required",
+          code: "INVALID_DATA_URL",
+        });
+      }
+      const descriptor = classifyFileInput(
+        inferredFileName ?? "upload",
+        dataSizeBytes,
+        body.mimeType ?? dataMimeType,
+      );
+      if (!descriptor.accepted) {
+        return this.sendFileInputError(res, descriptor);
+      }
+      body.kind = descriptor.kind;
+      body.sizeBytes = dataSizeBytes;
+    } else if (inferredFileName && typeof body.sizeBytes === "number") {
+      const descriptor = classifyFileInput(inferredFileName, body.sizeBytes, body.mimeType);
+      if (!descriptor.accepted) {
+        return this.sendFileInputError(res, descriptor);
+      }
+      body.kind = descriptor.kind;
+    }
+
+    const uploadRequest: FileUploadRequest = {
+      url: inputUrl,
       source: body.source ?? "api",
-    });
-    return this.sendJson(res, 200, result);
+      fileName: inferredFileName,
+      mimeType: body.mimeType,
+      kind: body.kind,
+      sizeBytes: body.sizeBytes,
+    };
+
+    if (isHostableDataUrl(inputUrl)) {
+      if (!this.imageHost) {
+        return this.sendJson(res, 503, {
+          error: "File host is not configured",
+          code: "FILE_HOST_NOT_CONFIGURED",
+        });
+      }
+
+      try {
+        const result = await this.imageHost.upload(uploadRequest, {
+          signal: AbortSignal.timeout(FILE_UPLOAD_TIMEOUT_MS),
+        });
+        return this.sendJson(res, 200, result);
+      } catch (err) {
+        console.error(
+          "[Gateway] file host upload failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+        return this.sendJson(res, 502, {
+          error: "File host upload failed",
+          code: "FILE_HOST_UPLOAD_FAILED",
+        });
+      }
+    }
+
+    try {
+      const provider = new JimoProvider(this.config.jimoConfig);
+      const result: FileUploadResponse = await provider.uploadFile(uploadRequest, {
+        signal: AbortSignal.timeout(FILE_UPLOAD_TIMEOUT_MS),
+      });
+      return this.sendJson(res, 200, result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const providerRejectedForSize = /(?:upload error|HTTP)\s*413\b|413\s+Request Entity Too Large/i.test(message);
+      console.error(
+        "[Gateway] provider file upload failed:",
+        message,
+      );
+      return this.sendJson(res, providerRejectedForSize ? 413 : 502, {
+        error: providerRejectedForSize
+          ? "Provider rejected the file because its upstream request limit was exceeded"
+          : "Provider file upload failed",
+        code: providerRejectedForSize
+          ? "PROVIDER_FILE_TOO_LARGE"
+          : "PROVIDER_FILE_UPLOAD_FAILED",
+      });
+    }
+  }
+
+  /** Extract text from a PDF locally; the PDF bytes never leave the Gateway. */
+  private async handleReadPdf(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    queryFileName?: string | null,
+  ): Promise<void> {
+    const contentType = String(req.headers["content-type"] ?? "")
+      .split(";", 1)[0]
+      .trim()
+      .toLowerCase();
+    let pdfBytes: Buffer | undefined;
+    let pdfDataUrl: string | undefined;
+    let fileName = queryFileName?.trim() || "document.pdf";
+
+    if (contentType === "application/pdf" || contentType === "application/octet-stream") {
+      pdfBytes = await readRawBody(req, LOCAL_PDF_MAX_BYTES);
+      if (pdfBytes.length === 0) {
+        return this.sendJson(res, 400, { error: "PDF content is empty" });
+      }
+    } else {
+      const body = await readJsonBody(req, MAX_PDF_JSON_BODY_BYTES) as {
+        url?: string;
+        fileName?: string;
+      };
+      if (typeof body.url !== "string" || !body.url.trim()) {
+        return this.sendJson(res, 400, { error: "url is required" });
+      }
+      if (!isPdfDataUrl(body.url)) {
+        return this.sendJson(res, 415, {
+          error: "A base64 PDF data URL is required",
+          code: "PDF_DATA_URL_REQUIRED",
+        });
+      }
+      pdfDataUrl = body.url;
+      fileName = body.fileName?.trim() || fileName;
+    }
+
+    try {
+      const result = pdfBytes
+        ? await this.pdfReader.readBytes(pdfBytes, {
+            signal: AbortSignal.timeout(PDF_READ_TIMEOUT_MS),
+          })
+        : await this.pdfReader.read(pdfDataUrl!, {
+            signal: AbortSignal.timeout(PDF_READ_TIMEOUT_MS),
+          });
+      const response: PdfReadResponse = {
+        ok: true,
+        fileName,
+        ...result,
+      };
+      return this.sendJson(res, 200, response);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Gateway] local PDF parsing failed:", message);
+      const timedOut = /timed out/i.test(message);
+      return this.sendJson(res, timedOut ? 504 : 422, {
+        error: timedOut ? "Local PDF parsing timed out" : "Local PDF parsing failed",
+        code: timedOut ? "PDF_PARSE_TIMEOUT" : "PDF_PARSE_FAILED",
+        message,
+      });
+    }
   }
 
   // ===== WebSocket =====
@@ -495,6 +866,7 @@ export class Gateway {
         break;
       }
       case "session.delete": {
+        this.abortRunsForSession(msg.sessionId);
         this.sessions.delete(msg.sessionId);
         break;
       }
@@ -551,6 +923,17 @@ export class Gateway {
     message: ChatMessage,
     runId: string,
   ): Promise<void> {
+    const visibleAttachmentCount = countAttachmentParts(message.content);
+    const providerAttachmentCount = countAttachmentParts(message.agentContext);
+    if (Math.max(visibleAttachmentCount, providerAttachmentCount) > MAX_FILES_PER_MESSAGE) {
+      ws.send(JSON.stringify({
+        type: "error",
+        code: "TOO_MANY_FILES",
+        message: `A message may contain at most ${MAX_FILES_PER_MESSAGE} files`,
+        runId,
+      }));
+      return;
+    }
     const session = this.sessions.get(sessionId);
     if (!session) {
       ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
@@ -651,6 +1034,8 @@ export class Gateway {
   private publicConfig(): Record<string, unknown> {
     return {
       mode: this.runtime.mode,
+      promptMode: this.runtime.promptMode,
+      autoMemoryReview: this.runtime.autoMemoryReview,
       workspace: this.runtime.workspace,
       dataDir: this.runtime.dataDir,
       toolsets: this.runtime.toolsets,
@@ -658,6 +1043,7 @@ export class Gateway {
       browserCdpUrl: this.runtime.browserCdpUrl,
       browser: this.browser.status(),
       visionConfigured: this.runtime.visionEnabled,
+      imageHostConfigured: Boolean(this.imageHost),
       prompts: {
         global: this.promptStore.readGlobalPrompt(),
         user: this.promptStore.readUserProfile(),
@@ -671,6 +1057,16 @@ export class Gateway {
       this.runtime.mode = patch.mode;
       this.config.agentConfig.mode = patch.mode;
       this.agent.config.mode = patch.mode;
+    }
+    if (patch.promptMode === "provider" || patch.promptMode === "local") {
+      this.runtime.promptMode = patch.promptMode;
+      this.config.agentConfig.promptMode = patch.promptMode;
+      this.agent.config.promptMode = patch.promptMode;
+    }
+    if (typeof patch.autoMemoryReview === "boolean") {
+      this.runtime.autoMemoryReview = patch.autoMemoryReview;
+      this.config.agentConfig.autoMemoryReview = patch.autoMemoryReview;
+      this.agent.config.autoMemoryReview = patch.autoMemoryReview;
     }
     if (Array.isArray(patch.toolsets)) {
       this.runtime.toolsets = patch.toolsets.filter((value): value is RuntimeConfig["toolsets"][number] =>
@@ -704,10 +1100,12 @@ export class Gateway {
 
   private persistRuntimeConfig(): void {
     try {
-      const file = path.join(this.runtime.dataDir, "config.json");
-      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const file = pathModule.join(this.runtime.dataDir, "config.json");
+      fs.mkdirSync(pathModule.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify({
         mode: this.runtime.mode,
+        promptMode: this.runtime.promptMode,
+        autoMemoryReview: this.runtime.autoMemoryReview,
         workspace: this.runtime.workspace,
         toolsets: this.runtime.toolsets,
         safetyMode: this.runtime.safetyMode,
@@ -739,6 +1137,21 @@ export class Gateway {
     });
     res.end(body);
   }
+
+  private sendFileInputError(
+    res: http.ServerResponse,
+    descriptor: FileInputDescriptor,
+  ): void {
+    const status = descriptor.rejectionCode === "FILE_TOO_LARGE" ? 413 : 415;
+    this.sendJson(res, status, {
+      error: descriptor.rejectionCode,
+      code: descriptor.rejectionCode,
+      fileName: descriptor.fileName,
+      extension: descriptor.extension,
+      sizeBytes: descriptor.sizeBytes,
+      maxBytes: descriptor.maxBytes,
+    });
+  }
 }
 
 // ===== Helpers =====
@@ -759,6 +1172,29 @@ function readVisionConfig(env: NodeJS.ProcessEnv): GatewayConfig["visionConfig"]
   };
 }
 
+function readImageHostConfig(env: NodeJS.ProcessEnv): ImageHostConfig | undefined {
+  const uploadUrl = (
+    env.IMAGE_HOST_UPLOAD_URL ??
+    "https://yunbloom.cn/img/api/upload"
+  ).trim();
+  let uploadToken = env.IMAGE_HOST_UPLOAD_TOKEN?.trim() ?? "";
+  const tokenFile = env.IMAGE_HOST_UPLOAD_TOKEN_FILE?.trim();
+
+  if (!uploadToken && tokenFile) {
+    try {
+      uploadToken = fs.readFileSync(tokenFile, "utf8").trim();
+    } catch (err) {
+      console.warn(
+        "[Gateway] image host token file is not readable:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  if (!uploadUrl || !uploadToken) return undefined;
+  return { uploadUrl, uploadToken };
+}
+
 function textOf(content: string | ChatMessage["content"]): string {
   if (typeof content === "string") return content;
   return content
@@ -769,6 +1205,56 @@ function textOf(content: string | ChatMessage["content"]): string {
 
 /** 请求体大小上限，防止内存被打满。 */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/** Data URLs expand by roughly 4/3; reserve room for JSON metadata. */
+const MAX_UPLOAD_BODY_BYTES = Math.ceil(FILE_INPUT_RULES.video.maxBytes * 4 / 3) + 2_000_000;
+const MAX_PDF_JSON_BODY_BYTES = Math.ceil(FILE_INPUT_RULES.document.maxBytes * 4 / 3) + 1_000_000;
+const FILE_UPLOAD_TIMEOUT_MS = 90 * 1000;
+const PDF_READ_TIMEOUT_MS = 90 * 1000;
+
+class RequestBodyTooLargeError extends Error {
+  constructor(maxBytes: number) {
+    super("Request body exceeds " + maxBytes + " bytes");
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
+function dataUrlByteLength(value: string): number | undefined {
+  const match = /^data:[^;,]+;base64,([\s\S]*)$/i.exec(value.trim());
+  if (!match) return undefined;
+  const encoded = match[1].replace(/\s+/g, "");
+  // An empty file is still a valid base64 data URL. The shared upload policy
+  // permits size 0, so let the provider decide whether an empty payload is
+  // meaningful instead of turning it into a gateway-level 400.
+  if (encoded.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+    return undefined;
+  }
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return Math.floor(encoded.length * 3 / 4) - padding;
+}
+
+function extensionForMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase();
+  const known: Record<string, string> = {
+    "application/pdf": "pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/msword": "doc",
+    "application/vnd.ms-excel": "xls",
+    "text/html": "html",
+    "text/csv": "csv",
+    "application/json": "json",
+    "application/xml": "xml",
+    "text/markdown": "md",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a",
+    "video/mp4": "mp4",
+  };
+  return known[normalized] ?? "bin";
+}
 
 /**
  * 读取并解析 JSON 请求体。
@@ -776,7 +1262,10 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
  * 必须先 Buffer.concat 再整体解码：多字节 UTF-8 字符（如中文占 3 字节）
  * 可能跨 TCP 包边界被切开，逐 chunk 隐式 toString 会把两半各自解成 U+FFFD。
  */
-function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+function readJsonBody(
+  req: http.IncomingMessage,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -785,10 +1274,10 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
     req.on("data", (chunk: Buffer) => {
       if (aborted) return;
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         aborted = true;
-        reject(new Error(`请求体超过 ${MAX_BODY_BYTES} 字节上限`));
-        req.destroy();
+        reject(new RequestBodyTooLargeError(maxBytes));
+        req.resume();
         return;
       }
       chunks.push(chunk);
@@ -804,6 +1293,41 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
       } catch (err) {
         reject(err);
       }
+    });
+  });
+}
+
+function readRawBody(
+  req: http.IncomingMessage,
+  maxBytes: number,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      req.resume();
+      reject(error);
+    };
+
+    req.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        fail(new RequestBodyTooLargeError(maxBytes));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("error", fail);
+    req.on("aborted", () => fail(new Error("Request aborted")));
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks));
     });
   });
 }
@@ -829,6 +1353,7 @@ export function startGateway(config?: Partial<GatewayConfig>): Gateway {
     staticDir: config?.staticDir,
     runtime: config?.runtime,
     visionConfig: config?.visionConfig ?? readVisionConfig(env),
+    imageHostConfig: config?.imageHostConfig ?? readImageHostConfig(env),
   };
 
   const gateway = new Gateway(finalConfig);

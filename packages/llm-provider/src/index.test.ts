@@ -81,6 +81,101 @@ test("vision provider uses its own Jimo share and session namespace", async () =
     assert.equal(result, "OCR");
     assert.match(requestedUrl, /shareId=vision-share/);
     assert.equal((JSON.parse(requestBody) as { sessionId: string }).sessionId, "vision-session-2");
+    const request = JSON.parse(requestBody) as {
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    const promptText = request.messages[0].content[0].text ?? "";
+    assert.match(promptText, /结构化 JSON 输出协议/);
+    assert.equal(promptText.includes("?"), false);
+    assert.equal(request.messages[0].content[1].type, "image_url");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Jimo file uploads preserve filename, kind and size metadata", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedBody = "";
+  let requestedUrl = "";
+  globalThis.fetch = (async (_input, init) => {
+    requestedUrl = String(_input);
+    requestedBody = String(init?.body ?? "");
+    return new Response(JSON.stringify({
+      id: 1,
+      source: "desktop",
+      processId: null,
+      fileName: "report.docx",
+      fileId: "report.docx",
+      type: 1,
+      url: "https://files.example.test/report.docx",
+      content: null,
+      extra: "{}",
+      createAt: 1,
+      updateAt: 1,
+      deleted: false,
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+
+  try {
+    const provider = new JimoProvider({
+      baseUrl: "https://example.test",
+      shareId: "share",
+      authorization: "token",
+    });
+    await provider.uploadFile({
+      url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,AA==",
+      source: "desktop",
+      fileName: "report.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      kind: "document",
+      sizeBytes: 1,
+    });
+    assert.match(requestedUrl, /\/v2\/upload\/file\/share\?shareId=share$/);
+    assert.deepEqual(JSON.parse(requestedBody), {
+      url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,AA==",
+      source: "desktop",
+      fileName: "report.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      kind: "document",
+      sizeBytes: 1,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Jimo file uploads replace echoed data URLs with the stable file id", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    id: 2,
+    source: "desktop",
+    processId: null,
+    fileName: null,
+    fileId: "file-id-123",
+    type: 0,
+    url: "data:text/markdown;base64,SGVsbG8=",
+    content: "",
+    extra: "{}",
+    createAt: 1,
+    updateAt: 1,
+    deleted: false,
+  }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+
+  try {
+    const provider = new JimoProvider({
+      baseUrl: "https://example.test",
+      shareId: "share",
+      authorization: "token",
+    });
+    const result = await provider.uploadFile({
+      url: "data:text/markdown;base64,SGVsbG8=",
+      source: "desktop",
+      fileName: "note.md",
+      mimeType: "text/markdown",
+      kind: "document",
+      sizeBytes: 5,
+    });
+    assert.equal(result.url, "file-id-123");
   } finally {
     globalThis.fetch = originalFetch;
   }

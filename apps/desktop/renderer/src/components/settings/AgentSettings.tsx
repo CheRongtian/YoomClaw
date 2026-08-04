@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const GATEWAY_URL = "http://localhost:18789";
 const TOOLSETS = [
@@ -13,12 +13,15 @@ type PromptTarget = "global" | "project" | "user";
 
 interface HermesConfig {
   mode: "legacy" | "hermes";
+  promptMode: "provider" | "local";
+  autoMemoryReview: boolean;
   workspace: string;
   toolsets: string[];
   safetyMode: "workspace-auto" | "confirm";
   browserCdpUrl?: string;
   browser?: { connected: boolean; cdpUrl?: string; pageUrl?: string; message?: string };
   visionConfigured: boolean;
+  imageHostConfigured: boolean;
   prompts: Record<PromptTarget, string>;
 }
 
@@ -32,12 +35,15 @@ interface SkillSummary {
 
 const EMPTY_CONFIG: HermesConfig = {
   mode: "hermes",
+  promptMode: "local",
+  autoMemoryReview: false,
   workspace: "",
   toolsets: ["coding", "memory", "skills", "browser", "vision"],
   safetyMode: "workspace-auto",
   browserCdpUrl: "http://127.0.0.1:9222",
   browser: { connected: false },
   visionConfigured: false,
+  imageHostConfigured: false,
   prompts: { global: "", project: "", user: "" },
 };
 
@@ -50,8 +56,23 @@ export default function AgentSettings() {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const aliveRef = useRef(true);
+  const loadRequestRef = useRef(0);
+  const workspaceReloadTimerRef = useRef<number | null>(null);
+  const configMutationRef = useRef(0);
+  const configQueueRef = useRef(Promise.resolve());
+  const actionRevisionRef = useRef(0);
+
+  useEffect(() => () => {
+    aliveRef.current = false;
+    if (workspaceReloadTimerRef.current !== null) {
+      window.clearTimeout(workspaceReloadTimerRef.current);
+      workspaceReloadTimerRef.current = null;
+    }
+  }, []);
 
   const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     try {
       const [configRes, memoryRes, skillsRes] = await Promise.all([
@@ -61,20 +82,29 @@ export default function AgentSettings() {
       ]);
       if (configRes.ok) {
         const next = { ...EMPTY_CONFIG, ...(await configRes.json()) } as HermesConfig;
+        if (!aliveRef.current || requestId !== loadRequestRef.current) return;
         setConfig(next);
         setPrompts(next.prompts ?? EMPTY_CONFIG.prompts);
       }
       if (memoryRes.ok) {
         const data = (await memoryRes.json()) as { memory?: string; user?: string };
+        if (!aliveRef.current || requestId !== loadRequestRef.current) return;
         setMemory(data.memory ?? "");
         setUserMemory(data.user ?? "");
       }
-      if (skillsRes.ok) setSkills((await skillsRes.json()) as SkillSummary[]);
+      if (skillsRes.ok) {
+        const nextSkills = (await skillsRes.json()) as SkillSummary[];
+        if (!aliveRef.current || requestId !== loadRequestRef.current) return;
+        setSkills(nextSkills);
+      }
+      if (!aliveRef.current || requestId !== loadRequestRef.current) return;
       setStatus("");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Gateway 暂不可用");
+      if (aliveRef.current && requestId === loadRequestRef.current) {
+        setStatus(error instanceof Error ? error.message : "Gateway 暂不可用");
+      }
     } finally {
-      setLoading(false);
+      if (aliveRef.current && requestId === loadRequestRef.current) setLoading(false);
     }
   }, []);
 
@@ -83,45 +113,68 @@ export default function AgentSettings() {
   }, [load]);
 
   const patchConfig = async (patch: Record<string, unknown>) => {
-    const previous = config;
-    const next = { ...config, ...patch } as HermesConfig;
-    setConfig(next);
-    try {
-      const response = await fetch(`${GATEWAY_URL}/api/config`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      if (!response.ok) throw new Error("保存 Agent 配置失败");
-      setConfig((await response.json()) as HermesConfig);
-      setStatus("Agent 配置已保存");
-    } catch (error) {
-      setConfig(previous);
-      setStatus(error instanceof Error ? error.message : "保存 Agent 配置失败");
-    }
+    const mutationId = ++configMutationRef.current;
+    loadRequestRef.current += 1;
+    setConfig((current) => ({ ...current, ...patch } as HermesConfig));
+    const operation = configQueueRef.current.then(async () => {
+      try {
+        const response = await fetch(`${GATEWAY_URL}/api/config`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (!response.ok) throw new Error("保存 Agent 配置失败");
+        const next = (await response.json()) as HermesConfig;
+        if (!aliveRef.current || mutationId !== configMutationRef.current) return;
+        setConfig(next);
+        setStatus("Agent 配置已保存");
+      } catch (error) {
+        if (!aliveRef.current || mutationId !== configMutationRef.current) return;
+        setStatus(error instanceof Error ? error.message : "保存 Agent 配置失败");
+        void load();
+      }
+    });
+    configQueueRef.current = operation.then(() => undefined, () => undefined);
+    await operation;
   };
 
   const savePrompt = async () => {
-    const response = await fetch(`${GATEWAY_URL}/api/config/prompts/${promptTarget}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: prompts[promptTarget] }),
-    });
-    if (!response.ok) {
-      setStatus("保存提示词失败");
-      return;
+    const actionId = ++actionRevisionRef.current;
+    try {
+      const response = await fetch(`${GATEWAY_URL}/api/config/prompts/${promptTarget}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: prompts[promptTarget] }),
+      });
+      if (!aliveRef.current || actionId !== actionRevisionRef.current) return;
+      if (!response.ok) {
+        setStatus("保存提示词失败");
+        return;
+      }
+      setStatus("提示词已保存，新会话会使用最新内容");
+    } catch (error) {
+      if (aliveRef.current && actionId === actionRevisionRef.current) {
+        setStatus(error instanceof Error ? error.message : "保存提示词失败");
+      }
     }
-    setStatus("提示词已保存，新会话会使用最新内容");
   };
 
   const saveMemory = async (store: "memory" | "user") => {
+    const actionId = ++actionRevisionRef.current;
     const content = store === "memory" ? memory : userMemory;
-    const response = await fetch(`${GATEWAY_URL}/api/memory/${store}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    });
-    setStatus(response.ok ? "记忆已保存" : "记忆保存失败（可能包含敏感信息或超出大小限制）");
+    try {
+      const response = await fetch(`${GATEWAY_URL}/api/memory/${store}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      if (!aliveRef.current || actionId !== actionRevisionRef.current) return;
+      setStatus(response.ok ? "记忆已保存" : "记忆保存失败（可能包含敏感信息或超出大小限制）");
+    } catch (error) {
+      if (aliveRef.current && actionId === actionRevisionRef.current) {
+        setStatus(error instanceof Error ? error.message : "记忆保存失败");
+      }
+    }
   };
 
   const chooseWorkspace = async () => {
@@ -133,11 +186,18 @@ export default function AgentSettings() {
     if (workspace) {
       setConfig((current) => ({ ...current, workspace }));
       setStatus("工作区已切换，Gateway 正在重启");
-      window.setTimeout(() => void load(), 1200);
+      if (workspaceReloadTimerRef.current !== null) {
+        window.clearTimeout(workspaceReloadTimerRef.current);
+      }
+      workspaceReloadTimerRef.current = window.setTimeout(() => {
+        workspaceReloadTimerRef.current = null;
+        if (aliveRef.current) void load();
+      }, 1200);
     }
   };
 
   const connectBrowser = async () => {
+    const actionId = ++actionRevisionRef.current;
     try {
       const response = await fetch(`${GATEWAY_URL}/api/browser/connect`, {
         method: "POST",
@@ -146,23 +206,44 @@ export default function AgentSettings() {
       });
       const data = (await response.json()) as HermesConfig["browser"] & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "连接 Chrome 失败");
+      if (!aliveRef.current || actionId !== actionRevisionRef.current) return;
       setConfig((current) => ({ ...current, browser: data }));
     } catch (error) {
+      if (!aliveRef.current || actionId !== actionRevisionRef.current) return;
       setStatus(error instanceof Error ? error.message : "连接 Chrome 失败");
       await load();
     }
   };
 
   const disconnectBrowser = async () => {
-    await fetch(`${GATEWAY_URL}/api/browser/disconnect`, { method: "POST" });
-    await load();
+    const actionId = ++actionRevisionRef.current;
+    try {
+      const response = await fetch(`${GATEWAY_URL}/api/browser/disconnect`, { method: "POST" });
+      if (!response.ok) throw new Error("断开 Chrome 失败");
+      if (aliveRef.current && actionId === actionRevisionRef.current) await load();
+    } catch (error) {
+      if (aliveRef.current && actionId === actionRevisionRef.current) {
+        setStatus(error instanceof Error ? error.message : "断开 Chrome 失败");
+      }
+    }
   };
 
   const applySkill = async (id: string, action: "apply" | "reject") => {
-    await fetch(`${GATEWAY_URL}/api/skills/${encodeURIComponent(id)}/${action}`, { method: "POST" });
-    setSkills((items) => action === "reject"
-      ? items.filter((skill) => skill.id !== id)
-      : items.map((skill) => skill.id === id ? { ...skill, status: "active" } : skill));
+    const actionId = ++actionRevisionRef.current;
+    try {
+      const response = await fetch(`${GATEWAY_URL}/api/skills/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+      if (!response.ok || !aliveRef.current || actionId !== actionRevisionRef.current) {
+        if (aliveRef.current && actionId === actionRevisionRef.current) setStatus("Skill 操作失败");
+        return;
+      }
+      setSkills((items) => action === "reject"
+        ? items.filter((skill) => skill.id !== id)
+        : items.map((skill) => skill.id === id ? { ...skill, status: "active" } : skill));
+    } catch (error) {
+      if (aliveRef.current && actionId === actionRevisionRef.current) {
+        setStatus(error instanceof Error ? error.message : "Skill 操作失败");
+      }
+    }
   };
 
   if (loading) return <div className="sp-empty">正在读取 Hermes 配置…</div>;
@@ -198,6 +279,26 @@ export default function AgentSettings() {
         </select>
       </div>
 
+      <div className="agent-row">
+        <div>
+          <div className="agent-label">行为提示来源</div>
+          <div className="agent-hint">本地模式会把工作区规则、记忆和工具说明组合进首轮任务；Provider 模式只发送用户任务。</div>
+        </div>
+        <select value={config.promptMode} onChange={(event) => void patchConfig({ promptMode: event.target.value })}>
+          <option value="local">本地工作区</option>
+          <option value="provider">Provider</option>
+        </select>
+      </div>
+      <div className="agent-row">
+        <div>
+          <div className="agent-label">完成后自动整理记忆</div>
+          <div className="agent-hint">成功任务结束后提取稳定的项目事实和用户偏好；敏感信息仍会被过滤。</div>
+        </div>
+        <button className={`toolset ${config.autoMemoryReview ? "selected" : ""}`} onClick={() => void patchConfig({ autoMemoryReview: !config.autoMemoryReview })}>
+          {config.autoMemoryReview ? "已开启" : "已关闭"}
+        </button>
+      </div>
+
       <div className="agent-section-title">Toolsets</div>
       <div className="toolset-grid">
         {TOOLSETS.map(([id, label]) => {
@@ -223,6 +324,10 @@ export default function AgentSettings() {
       {skills.length === 0 ? <div className="agent-hint">暂无 Skill。Agent 成功完成可复用流程后可以生成草稿。</div> : skills.map((skill) => <div className="skill-row" key={skill.id}><div><div className="agent-label">{skill.name} {skill.status === "draft" && <span className="draft-label">草稿</span>}</div><div className="agent-hint">{skill.description || "无描述"}</div></div>{skill.status === "draft" && <span className="skill-actions"><button className="small-button" onClick={() => void applySkill(skill.id, "apply")}>启用</button><button className="small-button danger" onClick={() => void applySkill(skill.id, "reject")}>拒绝</button></span>}</div>)}
 
       <div className="agent-section-title">浏览器与识图</div>
+      <div className="browser-card">
+        <div><div className="agent-label">图片上传链路</div><div className="agent-hint">图片先上传到自建图床，再把 HTTPS URL 交给识图机器人。</div></div>
+        <span className={"status-pill " + (config.imageHostConfigured ? "ok" : "warn")}>{config.imageHostConfigured ? "图床已连接" : "未配置图床"}</span>
+      </div>
       <div className="browser-card">
         <div><div className="agent-label">Chrome CDP</div><div className="agent-hint">{config.browser?.connected ? `已连接：${config.browser.pageUrl || "当前页面"}` : "未连接。请用 --remote-debugging-port=9222 启动 Chrome。"}</div></div>
         <div className="browser-actions"><input value={config.browserCdpUrl ?? ""} onChange={(event) => setConfig((current) => ({ ...current, browserCdpUrl: event.target.value }))} onBlur={() => void patchConfig({ browserCdpUrl: config.browserCdpUrl })} /><button className="small-button" onClick={() => void (config.browser?.connected ? disconnectBrowser() : connectBrowser())}>{config.browser?.connected ? "断开" : "连接"}</button></div>

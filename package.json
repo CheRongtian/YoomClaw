@@ -16,12 +16,16 @@
     "cli": "pnpm --filter @yoomclaw/cli start",
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",
+    "test:file-inputs": "tsx scripts/file-input-live.ts",
+    "test:file-inputs:ui": "tsx scripts/file-input-ui.mjs",
+    "test:file-inputs:history": "node scripts/file-input-history-crosscheck.mjs",
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "concurrently": "^9.1.0",
     "electron": "^33.4.11",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
   "engines": {

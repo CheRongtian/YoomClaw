@@ -71,6 +71,8 @@ test("runtime config restores persisted Hermes settings", () => {
   const config = loadRuntimeConfig({}, { workspace: root, dataDir });
   assert.deepEqual(config.toolsets, ["coding", "browser"]);
   assert.equal(config.safetyMode, "confirm");
+  assert.equal(config.promptMode, "provider");
+  assert.equal(config.autoMemoryReview, false);
   assert.equal(config.browserCdpUrl, "http://127.0.0.1:9333");
 
   const rollback = loadRuntimeConfig({
@@ -85,6 +87,16 @@ test("runtime config restores persisted Hermes settings", () => {
     dataDir: path.join(root, "env-only-data"),
   });
   assert.equal(envSafety.safetyMode, "workspace-auto");
+
+  const localPrompt = loadRuntimeConfig({
+    YOOMCLAW_PROMPT_MODE: "local",
+    YOOMCLAW_AUTO_MEMORY_REVIEW: "true",
+  }, {
+    workspace: root,
+    dataDir: path.join(root, "prompt-mode-data"),
+  });
+  assert.equal(localPrompt.promptMode, "local");
+  assert.equal(localPrompt.autoMemoryReview, true);
 
   const defaults = loadRuntimeConfig({ YOOMCLAW_DATA_DIR: "" }, { workspace: root });
   assert.equal(defaults.dataDir, path.join(root, ".claw-data"));

@@ -370,13 +370,15 @@ export function resolvePalette(themeId: string, mode: ThemeMode): { palette: The
 /** 把调色板应用到 document.documentElement（内联 CSS 变量，覆盖 :root 默认值）。 */
 export function applyPalette(themeId: string, mode: ThemeMode): void {
   if (typeof document === "undefined") return;
-  const { palette, effective } = resolvePalette(themeId, mode);
+  const theme = findTheme(themeId);
+  const effective = getEffectiveMode(mode);
+  const palette = effective === "dark" ? theme.dark : theme.light;
   const root = document.documentElement;
   for (const [k, v] of Object.entries(palette)) {
     root.style.setProperty(k, v);
   }
   root.dataset.mode = effective;
-  root.dataset.themeId = themeId;
+  root.dataset.themeId = theme.id;
   root.style.colorScheme = effective;
 }
 

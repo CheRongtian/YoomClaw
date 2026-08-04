@@ -31,8 +31,14 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 function readInitial(): { themeId: string; mode: ThemeMode } {
   if (typeof window === "undefined") return { themeId: DEFAULT_THEME_ID, mode: DEFAULT_MODE };
-  const themeId = (localStorage.getItem(THEME_ID_KEY) as string) || DEFAULT_THEME_ID;
-  const mode = (localStorage.getItem(THEME_MODE_KEY) as ThemeMode) || DEFAULT_MODE;
+  const savedThemeId = localStorage.getItem(THEME_ID_KEY);
+  const themeId = savedThemeId && THEMES.some((theme) => theme.id === savedThemeId)
+    ? savedThemeId
+    : DEFAULT_THEME_ID;
+  const savedMode = localStorage.getItem(THEME_MODE_KEY);
+  const mode: ThemeMode = savedMode === "light" || savedMode === "dark" || savedMode === "system"
+    ? savedMode
+    : DEFAULT_MODE;
   return { themeId, mode };
 }
 
@@ -63,7 +69,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       mode,
       effectiveMode: getEffectiveMode(mode),
       themes: THEMES,
-      setThemeId: (id: string) => setThemeIdState(id),
+      setThemeId: (id: string) => {
+        if (THEMES.some((theme) => theme.id === id)) setThemeIdState(id);
+      },
       setMode: (m: ThemeMode) => setModeState(m),
     }),
     [themeId, mode],

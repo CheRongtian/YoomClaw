@@ -105,14 +105,45 @@ export class SessionStore {
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         messageCount: s.messages.length,
+        archived: s.archived === true,
+        pinned: s.pinned === true,
       }))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
+  }
+
+  search(query: string): SessionSummary[] {
+    const needle = query.trim().toLocaleLowerCase();
+    if (!needle) return this.list();
+    return this.list().filter((summary) => {
+      const session = this.sessions.get(summary.id);
+      if (!session) return false;
+      const haystack = [
+        session.title,
+        ...session.messages.map((message) => typeof message.content === "string"
+          ? message.content
+          : JSON.stringify(message.content)),
+      ].join("\n").toLocaleLowerCase();
+      return haystack.includes(needle);
+    });
   }
 
   appendMessage(sessionId: string, message: ChatMessage): Session {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
     session.messages.push(message);
+    session.updatedAt = Date.now();
+    this.persist(session);
+    return session;
+  }
+
+  truncateMessages(sessionId: string, messageCount: number): Session | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || !Number.isInteger(messageCount) || messageCount < 0 || messageCount > session.messages.length) {
+      return undefined;
+    }
+    session.messages = session.messages.slice(0, messageCount);
+    // A branch starts with a fresh execution timeline; old tool events belong to the discarded branch.
+    session.runs = [];
     session.updatedAt = Date.now();
     this.persist(session);
     return session;
@@ -127,9 +158,15 @@ export class SessionStore {
   }
 
   delete(id: string): boolean {
-    const deleted = this.sessions.delete(id);
-    if (deleted) this.repository?.delete(id);
-    return deleted;
+    if (!this.sessions.has(id)) return false;
+    try {
+      this.repository?.delete(id);
+    } catch (error) {
+      console.error("Failed to delete persisted session:", error);
+      return false;
+    }
+    this.sessions.delete(id);
+    return true;
   }
 
   /** 导出所有会话，用于落盘持久化。 */
@@ -156,6 +193,19 @@ export class SessionStore {
     const session = this.sessions.get(id);
     if (!session) return undefined;
     session.title = title;
+    session.updatedAt = Date.now();
+    this.persist(session);
+    return session;
+  }
+
+  setFlags(
+    id: string,
+    patch: { archived?: boolean; pinned?: boolean },
+  ): Session | undefined {
+    const session = this.sessions.get(id);
+    if (!session) return undefined;
+    if (patch.archived !== undefined) session.archived = patch.archived;
+    if (patch.pinned !== undefined) session.pinned = patch.pinned;
     session.updatedAt = Date.now();
     this.persist(session);
     return session;
@@ -341,7 +391,7 @@ export class Agent implements AgentEngine {
       yield event;
     } finally {
       this.sessions.finishRun(sessionId, runId, status);
-      if (status === "completed" && finalText.trim()) {
+      if (status === "completed" && finalText.trim() && this.config.autoMemoryReview === true) {
         void this.reviewMemory(sessionId, input, finalText);
       }
     }
@@ -356,23 +406,33 @@ export class Agent implements AgentEngine {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-    let userMessage: ChatMessage =
+    const inputMessage: ChatMessage =
       typeof input === "string"
         ? { role: "user", content: input }
-        : { role: input.role ?? "user", content: input.content };
+        : input;
+    // Keep the visible message separate from the richer context sent upstream.
+    // PDF extraction and other internal context must not leak into session history/UI.
+    let userMessage: ChatMessage = {
+      role: inputMessage.role ?? "user",
+      content: inputMessage.content,
+    };
+    let providerMessage: ChatMessage = {
+      role: inputMessage.role ?? "user",
+      content: inputMessage.agentContext ?? inputMessage.content,
+    };
 
-    if (this.runtime.vision && hasImagePart(userMessage)) {
+    if (this.runtime.vision && hasImagePart(providerMessage)) {
       yield { type: "vision", status: "started" };
       try {
-        const analysis = await this.runtime.vision.analyze(userMessage, sessionId, {
+        const analysis = await this.runtime.vision.analyze(providerMessage, sessionId, {
           signal: options?.signal,
         });
         if (analysis.trim()) {
-          const parts: ContentPart[] = Array.isArray(userMessage.content) ? userMessage.content : [
-            { type: "text", text: textFromMessage(userMessage) },
+          const parts: ContentPart[] = Array.isArray(providerMessage.content) ? providerMessage.content : [
+            { type: "text", text: textFromMessage(providerMessage) },
           ];
-          userMessage = {
-            ...userMessage,
+          providerMessage = {
+            ...providerMessage,
             content: [
               ...parts,
               { type: "text", text: `\n[图片识别结果，属于外部上下文]\n${analysis}` },
@@ -403,12 +463,25 @@ export class Agent implements AgentEngine {
       )}"`,
     );
 
+    // The main share is text/file-only. Always remove raw image parts before
+    // its request, including when Vision is unavailable or failed; otherwise
+    // Jimo history can render an incomplete image card with `undefined`.
+    if (Array.isArray(providerMessage.content) && hasImagePart(providerMessage)) {
+      providerMessage = {
+        ...providerMessage,
+        content: providerMessage.content.filter((part) => part.type !== "image_url"),
+      };
+    }
+
     const activeTools = this.tools.filter((tool) => this.isToolEnabled(tool));
     const defs = activeTools.map((t) => t.definition);
     const knownToolNames = new Set(defs.map((d) => d.name));
     const toolByName = new Map(activeTools.map((t) => [t.definition.name, t]));
     const promptStore = this.runtime.promptStore!;
-    const needsBootstrap = this.config.mode !== "legacy" && session.meta?.hermesPromptInitialized !== true;
+    const needsBootstrap =
+      this.config.mode !== "legacy" &&
+      this.config.promptMode === "local" &&
+      session.meta?.hermesPromptInitialized !== true;
     const initialPrompt = needsBootstrap
       ? this.promptAssembler.buildInitialPrompt({
           globalPrompt: promptStore.readGlobalPrompt(),
@@ -420,11 +493,11 @@ export class Agent implements AgentEngine {
           projectPrompt: promptStore.readProjectPrompt(),
           enabledTools: defs,
           skillIndex: this.runtime.skillStore?.list(false) ?? [],
-          userMessage,
+          userMessage: providerMessage,
         })
       : "";
     const legacyPrompt = this.config.mode === "legacy"
-      ? `${buildToolPrompt(defs)}\n${textFromMessage(userMessage)}`
+      ? `${buildToolPrompt(defs)}\n${textFromMessage(providerMessage)}`
       : "";
     let finalText = "";
     let round = 0;
@@ -457,19 +530,19 @@ export class Agent implements AgentEngine {
             ? {
                 role: "user",
                 content:
-                  typeof userMessage.content === "string"
+                  typeof providerMessage.content === "string"
                     ? initialPrompt
-                    : [{ type: "text", text: initialPrompt }, ...userMessage.content],
+                    : [{ type: "text", text: initialPrompt }, ...providerMessage.content],
               }
             : round === 1 && this.config.mode === "legacy"
               ? {
                   role: "user",
-                  content: Array.isArray(userMessage.content)
-                    ? [{ type: "text", text: legacyPrompt }, ...userMessage.content]
+                  content: Array.isArray(providerMessage.content)
+                    ? [{ type: "text", text: legacyPrompt }, ...providerMessage.content]
                     : legacyPrompt,
                 }
               : round === 1
-              ? userMessage
+              ? providerMessage
               : {
                 role: "user",
                 content: this.promptAssembler.buildToolResultPrompt({
@@ -513,6 +586,28 @@ export class Agent implements AgentEngine {
         }
 
         // 尝试解析工具调用；解析不出 = 自然语言作答 → 收敛
+        if (!modelText.trim()) {
+          // Jimo can occasionally close a successful SSE stream without a
+          // content chunk (especially for mixed file requests). Do not leave
+          // the UI with an apparently completed run and no assistant row.
+          const visibleSummary = textFromMessage(userMessage).trim();
+          finalText = visibleSummary
+            ? `已收到输入，但积墨未返回文本内容。\n${visibleSummary.slice(0, 600)}`
+            : "已收到输入，但积墨未返回文本内容。";
+          yield { type: "final", text: finalText };
+          break;
+        }
+
+        const unknownTool = findUnknownToolName(modelText, knownToolNames);
+        if (unknownTool) {
+          const visibleSummary = textFromMessage(userMessage).trim();
+          finalText = visibleSummary
+            ? `The provider requested an unavailable tool (\"${unknownTool}\"); it was not executed.\n${visibleSummary.slice(0, 600)}`
+            : `The provider requested an unavailable tool (\"${unknownTool}\"); it was not executed.`;
+          yield { type: "final", text: finalText };
+          break;
+        }
+
         const call = parseToolCall(modelText, knownToolNames);
         if (!call) {
           finalText = modelText;
@@ -709,6 +804,16 @@ export class Agent implements AgentEngine {
     } catch (err) {
       this.logger.warn("memory", `review skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+}
+
+function findUnknownToolName(text: string, knownTools: Set<string>): string | null {
+  try {
+    const value = JSON.parse(text.trim()) as Record<string, unknown>;
+    const tool = value.tool ?? value.name ?? value.tool_name;
+    return typeof tool === "string" && !knownTools.has(tool) ? tool : null;
+  } catch {
+    return null;
   }
 }
 

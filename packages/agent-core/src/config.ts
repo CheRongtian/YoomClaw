@@ -131,11 +131,30 @@ export function loadRuntimeConfig(
   const envSafety = env.YOOMCLAW_SAFETY_MODE === "confirm" || env.YOOMCLAW_SAFETY_MODE === "workspace-auto"
     ? env.YOOMCLAW_SAFETY_MODE
     : undefined;
+  const persistedPromptMode = persisted.promptMode === "provider" || persisted.promptMode === "local"
+    ? persisted.promptMode
+    : undefined;
+  const envPromptMode = env.YOOMCLAW_PROMPT_MODE === "local" || env.YOOMCLAW_PROMPT_MODE === "provider"
+    ? env.YOOMCLAW_PROMPT_MODE
+    : undefined;
+  const persistedAutoMemoryReview = typeof persisted.autoMemoryReview === "boolean"
+    ? persisted.autoMemoryReview
+    : undefined;
+  const envAutoMemoryReview = env.YOOMCLAW_AUTO_MEMORY_REVIEW === "true";
 
   return {
     mode:
       overrides.mode ??
       (envMode === "legacy" ? "legacy" : persistedMode ?? envMode ?? "hermes"),
+    promptMode:
+      overrides.promptMode ??
+      persistedPromptMode ??
+      envPromptMode ??
+      "provider",
+    autoMemoryReview:
+      overrides.autoMemoryReview ??
+      persistedAutoMemoryReview ??
+      envAutoMemoryReview,
     workspace,
     dataDir,
     toolsets,

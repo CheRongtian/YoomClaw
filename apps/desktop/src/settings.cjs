@@ -12,6 +12,11 @@ const { app } = require("electron");
 const nodePath = require("node:path");
 const fs = require("node:fs");
 
+const WINDOW_LIMITS = Object.freeze({
+  windowWidth: Object.freeze({ min: 720, max: 3840 }),
+  windowHeight: Object.freeze({ min: 520, max: 2160 }),
+});
+
 const DEFAULTS = Object.freeze({
   /** 点标题栏关闭按钮：最小化到托盘 | 直接退出 */
   closeAction: "tray",
@@ -27,6 +32,8 @@ const DEFAULTS = Object.freeze({
   notifyOnComplete: true,
   /** 界面缩放倍率 */
   zoomFactor: 1,
+  windowWidth: 960,
+  windowHeight: 720,
   /** 当前 Agent 项目工作区 */
   workspace: "",
 });
@@ -54,6 +61,14 @@ function sanitize(raw) {
     const value = raw[key];
     if (value === undefined) continue;
     const fallback = DEFAULTS[key];
+    const windowLimits = WINDOW_LIMITS[key];
+
+    if (windowLimits) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        out[key] = Math.round(Math.min(windowLimits.max, Math.max(windowLimits.min, value)));
+      }
+      continue;
+    }
 
     if (ENUMS[key]) {
       if (ENUMS[key].includes(value)) out[key] = value;

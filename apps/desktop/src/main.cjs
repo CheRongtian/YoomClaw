@@ -39,6 +39,9 @@ let tray = null;
 let isQuitting = false;
 let hasShownCloseHint = false;
 let gatewayChild = null;
+let gatewayRestartTimer = null;
+let gatewayStopRequested = false;
+let windowSizeSaveTimer = null;
 
 // 仓库根目录（apps/desktop/src -> YoomClaw/）
 const ROOT = nodePath.resolve(__dirname, "..", "..", "..");
@@ -66,6 +69,8 @@ function resolveTsxCli() {
 }
 
 function startGateway() {
+  if (gatewayChild) return;
+  gatewayStopRequested = false;
   const tsxCli = resolveTsxCli();
   if (!tsxCli) {
     console.error("[Gateway] 找不到 tsx，无法启动 Gateway 子进程（请先安装 tsx）");
@@ -103,10 +108,22 @@ function startGateway() {
       console.warn(`[Gateway] 子进程退出 (code=${code}, signal=${signal})`);
     }
     gatewayChild = null;
+    if (!isQuitting && !gatewayStopRequested && !gatewayRestartTimer) {
+      console.warn("[Gateway] backend exited unexpectedly; restarting in 2 seconds");
+      gatewayRestartTimer = setTimeout(() => {
+        gatewayRestartTimer = null;
+        if (!isQuitting && !gatewayChild) startGateway();
+      }, 2000);
+    }
   });
 }
 
 function stopGateway() {
+  gatewayStopRequested = true;
+  if (gatewayRestartTimer) {
+    clearTimeout(gatewayRestartTimer);
+    gatewayRestartTimer = null;
+  }
   if (gatewayChild) {
     try {
       gatewayChild.kill("SIGTERM");
@@ -117,8 +134,12 @@ function stopGateway() {
 
 function restartGateway() {
   stopGateway();
-  setTimeout(() => {
-    if (!isQuitting) startGateway();
+  gatewayRestartTimer = setTimeout(() => {
+    gatewayRestartTimer = null;
+    if (!isQuitting) {
+      gatewayStopRequested = false;
+      startGateway();
+    }
   }, 250);
 }
 
@@ -166,12 +187,26 @@ function pushWindowState() {
   });
 }
 
+function persistWindowSize() {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMaximized()) return;
+  const [width, height] = mainWindow.getSize();
+  settingsStore.save({ windowWidth: width, windowHeight: height });
+}
+
+function scheduleWindowSizePersistence() {
+  if (windowSizeSaveTimer !== null) clearTimeout(windowSizeSaveTimer);
+  windowSizeSaveTimer = setTimeout(() => {
+    windowSizeSaveTimer = null;
+    persistWindowSize();
+  }, 250);
+}
+
 function createWindow() {
   const settings = settingsStore.load();
 
   mainWindow = new BrowserWindow({
-    width: 960,
-    height: 720,
+    width: settings.windowWidth,
+    height: settings.windowHeight,
     minWidth: 720,
     minHeight: 520,
     show: false,
@@ -188,6 +223,8 @@ function createWindow() {
       sandbox: true,
     },
   });
+  const windowForLifecycle = mainWindow;
+  let devLoadRetryTimer = null;
 
   if (isDev) {
     // Vite dev server 常比 Electron 晚几秒就绪，直接 loadURL 会吃到
@@ -195,10 +232,10 @@ function createWindow() {
     let devLoadTries = 0;
     const MAX_DEV_LOAD_TRIES = 60;
     const loadDevUrl = () => {
-      if (!mainWindow || mainWindow.isDestroyed()) return;
-      mainWindow.loadURL(RENDERER_DEV_URL).catch(() => {});
+      if (windowForLifecycle.isDestroyed()) return;
+      windowForLifecycle.loadURL(RENDERER_DEV_URL).catch(() => {});
     };
-    mainWindow.webContents.on("did-fail-load", (_e, errorCode) => {
+    windowForLifecycle.webContents.on("did-fail-load", (_e, errorCode) => {
       if (errorCode === -3) return; // ERR_ABORTED：正常的导航打断，不算失败
       if (devLoadTries++ >= MAX_DEV_LOAD_TRIES) {
         console.error(
@@ -206,7 +243,12 @@ function createWindow() {
         );
         return;
       }
-      setTimeout(loadDevUrl, 1000);
+      if (devLoadRetryTimer === null) {
+        devLoadRetryTimer = setTimeout(() => {
+          devLoadRetryTimer = null;
+          loadDevUrl();
+        }, 1000);
+      }
     });
     loadDevUrl();
   } else {
@@ -214,24 +256,33 @@ function createWindow() {
   }
 
   // 缩放要在页面加载完成后设置，否则会被这次导航重置掉
-  mainWindow.webContents.on("did-finish-load", () => {
+  windowForLifecycle.webContents.on("did-finish-load", () => {
+    if (windowForLifecycle.isDestroyed()) return;
     try {
-      mainWindow.webContents.setZoomFactor(settingsStore.load().zoomFactor || 1);
+      windowForLifecycle.webContents.setZoomFactor(settingsStore.load().zoomFactor || 1);
     } catch {}
-    pushWindowState();
+    windowForLifecycle.webContents.send("window:state", {
+      maximized: windowForLifecycle.isMaximized(),
+    });
   });
 
-  mainWindow.once("ready-to-show", () => {
-    if (!mainWindow) return;
+  windowForLifecycle.once("ready-to-show", () => {
+    if (windowForLifecycle.isDestroyed()) return;
     // 开了"启动时最小化到托盘"就别抢焦点，静默待命
     if (settingsStore.load().startMinimized) return;
-    mainWindow.show();
+    windowForLifecycle.show();
+    windowForLifecycle.focus();
   });
 
   mainWindow.on("maximize", pushWindowState);
-  mainWindow.on("unmaximize", pushWindowState);
+  mainWindow.on("unmaximize", () => {
+    pushWindowState();
+    scheduleWindowSizePersistence();
+  });
+  mainWindow.on("resize", scheduleWindowSizePersistence);
 
   mainWindow.on("close", (e) => {
+    persistWindowSize();
     if (isQuitting) return;
 
     // 关闭按钮行为由用户设置决定：收进托盘（默认）或直接退出
@@ -249,6 +300,14 @@ function createWindow() {
   });
 
   mainWindow.on("closed", () => {
+    if (devLoadRetryTimer !== null) {
+      clearTimeout(devLoadRetryTimer);
+      devLoadRetryTimer = null;
+    }
+    if (windowSizeSaveTimer !== null) {
+      clearTimeout(windowSizeSaveTimer);
+      windowSizeSaveTimer = null;
+    }
     mainWindow = null;
   });
 
@@ -275,6 +334,7 @@ function createTray() {
       label: "新建对话",
       click: () => {
         mainWindow && mainWindow.show();
+        mainWindow && mainWindow.focus();
         mainWindow && mainWindow.webContents.send("menu:new-chat");
       },
     },
@@ -354,6 +414,12 @@ ipcMain.handle("window:minimize", async () => {
   mainWindow.minimize();
 });
 
+ipcMain.handle("window:focus", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+});
+
 ipcMain.handle("window:toggle-maximize", async () => {
   if (!mainWindow) return;
   if (mainWindow.isMaximized()) {
@@ -411,6 +477,25 @@ ipcMain.handle("app:open-data-dir", async () => {
   await shell.openPath(app.getPath("userData"));
 });
 
+ipcMain.handle("file:save-text", async (_evt, payload) => {
+  if (!payload || typeof payload.content !== "string") {
+    throw new Error("text content is required");
+  }
+  if (Buffer.byteLength(payload.content, "utf8") > 10 * 1024 * 1024) {
+    throw new Error("text export is too large");
+  }
+  const requestedName = typeof payload.fileName === "string" ? payload.fileName : "yoomclaw-session.md";
+  const safeName = nodePath.basename(requestedName).replace(/[<>:"/\\|?*\x00-\x1F]/g, "-") || "yoomclaw-session.md";
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "导出当前对话",
+    defaultPath: nodePath.join(app.getPath("downloads"), safeName.endsWith(".md") ? safeName : `${safeName}.md`),
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+  if (result.canceled || !result.filePath) return null;
+  await fs.promises.writeFile(result.filePath, payload.content, "utf8");
+  return result.filePath;
+});
+
 // ===== App Lifecycle =====
 
 app.whenReady().then(() => {
@@ -425,6 +510,7 @@ app.whenReady().then(() => {
       createWindow();
     } else {
       mainWindow && mainWindow.show();
+      mainWindow && mainWindow.focus();
     }
   });
 });
@@ -443,5 +529,6 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  persistWindowSize();
   stopGateway();
 });

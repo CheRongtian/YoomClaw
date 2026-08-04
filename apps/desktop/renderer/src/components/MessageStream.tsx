@@ -1,4 +1,5 @@
-import type { ChatMessage } from "@yoomclaw/protocol";
+import { Fragment, useEffect, useRef, useState } from "react";
+import type { AgentEvent, ChatMessage, ContentPart } from "@yoomclaw/protocol";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -6,7 +7,17 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import SpiralLogo from "./SpiralLogo";
-import { WrenchIcon } from "./icons";
+import {
+  WrenchIcon,
+  EditIcon,
+  RefreshIcon,
+  CopyIcon,
+  CheckIcon,
+  CircleCheckIcon,
+  CircleXIcon,
+  ClockIcon,
+  LoaderIcon,
+} from "./icons";
 
 export interface ToolCard {
   callId: string;
@@ -24,46 +35,253 @@ export interface LiveAssistant {
   progress: { name: string; percent: number } | null;
 }
 
-interface Props {
-  messages: ChatMessage[];
-  live?: LiveAssistant;
+export function toolCardsFromEvents(events: AgentEvent[]): ToolCard[] {
+  const cards: ToolCard[] = [];
+  const byId = new Map<string, ToolCard>();
+  const add = (card: ToolCard) => {
+    cards.push(card);
+    byId.set(card.callId, card);
+  };
+
+  for (const event of events) {
+    if (event.type === "tool_confirm") {
+      const existing = byId.get(event.callId);
+      if (existing) {
+        existing.name = event.name;
+        existing.args = event.args;
+        existing.status = "pending";
+      } else {
+        add({
+          callId: event.callId,
+          name: event.name,
+          args: event.args,
+          status: "pending",
+        });
+      }
+    } else if (event.type === "tool_start") {
+      const existing = byId.get(event.callId);
+      if (existing) {
+        existing.status = "running";
+        existing.args = event.args;
+        existing.name = event.name;
+      } else {
+        add({
+          callId: event.callId,
+          name: event.name,
+          args: event.args,
+          status: "running",
+        });
+      }
+    } else if (event.type === "tool_end") {
+      const existing = byId.get(event.callId);
+      if (existing) {
+        existing.status = event.isError ? "error" : "done";
+        existing.result = event.result;
+        existing.isError = event.isError;
+        existing.durationMs = event.durationMs;
+        existing.name = event.name;
+      } else {
+        add({
+          callId: event.callId,
+          name: event.name,
+          args: {},
+          status: event.isError ? "error" : "done",
+          result: event.result,
+          isError: event.isError,
+          durationMs: event.durationMs,
+        });
+      }
+    }
+  }
+  return cards;
 }
 
-export default function MessageStream({ messages, live }: Props) {
+function sanitizeUserText(text: string): string {
+  return text.replace(
+    /\[本地 PDF 内容：([^\]\r\n]+)\][\s\S]*?(?:\n\[PDF 内容已截断[^\]\r\n]*\]|$)/g,
+    (_match, fileName: string) => `[已解析 PDF：${fileName}]`,
+  );
+}
+
+interface Props {
+  messages: ChatMessage[];
+  historicalTools?: ToolCard[];
+  live?: LiveAssistant;
+  onEditUser?: (index: number, message: ChatMessage) => void;
+  onRetryAssistant?: (index: number) => void;
+}
+
+export default function MessageStream({
+  messages,
+  historicalTools = [],
+  live,
+  onEditUser,
+  onRetryAssistant,
+}: Props) {
+  const lastAssistantIndex = messages.reduce(
+    (last, message, index) => message.role === "assistant" ? index : last,
+    -1,
+  );
+  const insertionIndex = historicalTools.length > 0
+    ? (lastAssistantIndex >= 0 ? lastAssistantIndex : messages.length)
+    : -1;
+  const messageKeyCounts = new Map<string, number>();
   return (
     <div className="message-stream">
-      {messages.map((msg, idx) => (
-        <MessageRow key={idx} message={msg} />
-      ))}
+      {messages.map((msg, idx) => {
+        const baseKey = `${msg.role}:${msg.tool_call_id ?? ""}:${messageText(msg.content).slice(0, 120)}`;
+        const occurrence = messageKeyCounts.get(baseKey) ?? 0;
+        messageKeyCounts.set(baseKey, occurrence + 1);
+        return (
+          <Fragment key={`${baseKey}:${occurrence}`}>
+            {idx === insertionIndex && <HistoricalToolsRow tools={historicalTools} />}
+            <MessageRow
+              message={msg}
+              index={idx}
+              onEditUser={onEditUser}
+              onRetryAssistant={onRetryAssistant}
+            />
+          </Fragment>
+        );
+      })}
+      {insertionIndex === messages.length && <HistoricalToolsRow tools={historicalTools} />}
       {live && <LiveRow live={live} />}
       <style jsx>{`
         .message-stream {
           flex: 1;
           overflow-y: auto;
           padding: 16px 0;
-          scroll-behavior: smooth;
+          scroll-behavior: auto;
         }
       `}</style>
     </div>
   );
 }
 
-function MessageRow({ message }: { message: ChatMessage }) {
+export function messageText(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content.map((part) => {
+    if (part.type === "text") return part.text;
+    if (part.type === "image_url") return "[图片附件]";
+    return `[文件附件${part.file_url.fileId ? `：${part.file_url.fileId}` : ""}]`;
+  }).join("\n");
+}
+
+function MarkdownContent({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex, rehypeHighlight]}
+      components={{
+        code: ({ inline, className, children, ...props }: any) => {
+          if (inline) {
+            return (
+              <code className="inline-code" {...props}>
+                {children}
+              </code>
+            );
+          }
+          return (
+            <code className={className} {...props}>
+              {children}
+            </code>
+          );
+        },
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
+
+function isRenderableUrl(value: string): boolean {
+  return /^(?:https?:|data:)/i.test(value);
+}
+
+function AttachmentPart({ part }: { part: Exclude<ContentPart, { type: "text" }> }) {
+  if (part.type === "image_url") {
+    return isRenderableUrl(part.image_url.url) ? (
+      <a className="attachment-image-link" href={part.image_url.url} target="_blank" rel="noreferrer">
+        <img className="attachment-image" src={part.image_url.url} alt="图片附件" />
+      </a>
+    ) : (
+      <span className="attachment-chip">图片附件</span>
+    );
+  }
+  const label = part.file_url.fileId ? `文件附件：${part.file_url.fileId}` : "文件附件";
+  return isRenderableUrl(part.file_url.url) ? (
+    <a className="attachment-link" href={part.file_url.url} target="_blank" rel="noreferrer">
+      {label}
+    </a>
+  ) : (
+    <span className="attachment-chip">{label}</span>
+  );
+}
+
+function MessageContent({ message, isUser }: { message: ChatMessage; isUser: boolean }) {
+  if (typeof message.content === "string") {
+    return isUser
+      ? <div className="user-text">{sanitizeUserText(message.content)}</div>
+      : <MarkdownContent text={message.content} />;
+  }
+  return (
+    <div className="content-parts">
+      {message.content.map((part, index) => (
+        part.type === "text" ? (
+          isUser
+            ? <div className="user-text" key={index}>{sanitizeUserText(part.text)}</div>
+            : <MarkdownContent key={index} text={part.text} />
+        ) : <AttachmentPart key={index} part={part} />
+      ))}
+    </div>
+  );
+}
+
+function MessageRow({
+  message,
+  index,
+  onEditUser,
+  onRetryAssistant,
+}: {
+  message: ChatMessage;
+  index: number;
+  onEditUser?: (index: number, message: ChatMessage) => void;
+  onRetryAssistant?: (index: number) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
+  if (message.role === "tool") {
+    return (
+      <HistoricalToolsRow
+        tools={[{
+          callId: message.tool_call_id ?? `tool-${message.name ?? "result"}`,
+          name: message.name ?? "tool",
+          args: {},
+          status: "done",
+          result: messageText(message.content),
+        }]}
+      />
+    );
+  }
   const isUser = message.role === "user";
-  const content =
-    typeof message.content === "string"
-      ? message.content
-      : Array.isArray(message.content)
-        ? message.content
-            .map((p) =>
-              p.type === "text"
-                ? p.text
-                : p.type === "image_url"
-                  ? "[image]"
-                  : "[file]",
-            )
-            .join("")
-        : "";
+  const copy = async () => {
+    const text = messageText(message.content);
+    if (!text || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopied(false);
+      }, 1200);
+    } catch {
+      // Clipboard permissions are optional in browser mode.
+    }
+  };
 
   return (
     <div className={`row ${isUser ? "user" : "assistant"}`}>
@@ -74,33 +292,28 @@ function MessageRow({ message }: { message: ChatMessage }) {
       )}
       <div className="bubble">
         <div className="content">
-          {isUser ? (
-            <div className="user-text">{content}</div>
-          ) : (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex, rehypeHighlight]}
-              components={{
-                code: ({ inline, className, children, ...props }: any) => {
-                  if (inline) {
-                    return (
-                      <code className="inline-code" {...props}>
-                        {children}
-                      </code>
-                    );
-                  }
-                  return (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  );
-                },
-              }}
-            >
-              {content}
-            </ReactMarkdown>
-          )}
+          <MessageContent message={message} isUser={isUser} />
         </div>
+        {messageText(message.content) && (
+          <div className="message-actions">
+            {isUser && onEditUser && (
+              <button className="message-action" type="button" onClick={() => onEditUser(index, message)} title="编辑并重发" aria-label="编辑并重发">
+                <EditIcon size={13} />
+                <span className="sr-only">编辑</span>
+              </button>
+            )}
+            {!isUser && onRetryAssistant && (
+              <button className="message-action" type="button" onClick={() => onRetryAssistant(index)} title="重试此回复" aria-label="重试此回复">
+                <RefreshIcon size={13} />
+                <span className="sr-only">重试</span>
+              </button>
+            )}
+            <button className={`message-action ${copied ? "copied" : ""}`} type="button" onClick={() => void copy()} title={copied ? "已复制" : "复制消息"} aria-label={copied ? "已复制" : "复制消息"}>
+              {copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+              <span className="sr-only">{copied ? "已复制" : "复制"}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       <style jsx>{`
@@ -111,6 +324,7 @@ function MessageRow({ message }: { message: ChatMessage }) {
           margin: 0 auto 18px;
           padding: 0 24px;
           align-items: flex-start;
+          animation: yc-fade-up 220ms var(--ease-standard) both;
         }
         .row.user {
           justify-content: flex-end;
@@ -195,6 +409,107 @@ function MessageRow({ message }: { message: ChatMessage }) {
         .user-text {
           white-space: pre-wrap;
         }
+        .content-parts {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .attachment-image-link {
+          display: block;
+          width: fit-content;
+          max-width: min(420px, 100%);
+        }
+        .attachment-image {
+          display: block;
+          max-width: 100%;
+          max-height: 280px;
+          border-radius: 8px;
+          border: 1px solid var(--border);
+          object-fit: contain;
+        }
+        .attachment-link,
+        .attachment-chip {
+          display: inline-flex;
+          width: fit-content;
+          align-items: center;
+          padding: 5px 8px;
+          border-radius: 6px;
+          background: var(--bg-element);
+          color: var(--text-secondary);
+          font-size: 12px;
+          text-decoration: none;
+        }
+        .attachment-link:hover { color: var(--primary); }
+        .message-actions {
+          display: flex;
+          justify-content: flex-end;
+          margin-top: 5px;
+          opacity: 0;
+          transform: translateY(3px);
+          pointer-events: none;
+          transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+        }
+        .row:hover .message-actions,
+        .row:focus-within .message-actions { opacity: 1; transform: translateY(0); pointer-events: auto; }
+        .message-action {
+          width: 26px;
+          height: 24px;
+          border: 0;
+          padding: 0;
+          border-radius: 6px;
+          color: var(--text-muted);
+          background: transparent;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .message-action:hover {
+          color: var(--text);
+          background: var(--bg-element);
+        }
+        .message-action.copied { color: var(--success); }
+        .message-action.copied :global(svg) { animation: yc-pop 180ms var(--ease-emphasized) both; }
+        .sr-only {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function HistoricalToolsRow({ tools }: { tools: ToolCard[] }) {
+  return (
+    <div className="row assistant historical-tools-row">
+      <div className="avatar">
+        <SpiralLogo size={18} />
+      </div>
+      <div className="bubble">
+        <div className="tools">
+          {tools.map((tool) => <ToolCardView key={tool.callId} card={tool} />)}
+        </div>
+        <div className="history-label">历史工具调用</div>
+      </div>
+      <style jsx>{`
+        .historical-tools-row { margin-bottom: 8px; animation-delay: 40ms; }
+        .tools {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .history-label {
+          margin-top: 5px;
+          color: var(--text-muted);
+          font-size: 11px;
+        }
       `}</style>
     </div>
   );
@@ -210,7 +525,7 @@ function LiveRow({ live }: { live: LiveAssistant }) {
         {live.progress && (
           <div className="progress">
             <div className="progress-label">
-              <span className="spinner" /> {live.progress.name}
+              <LoaderIcon size={13} className="spinner" /> {live.progress.name}
               <span className="progress-pct">{live.progress.percent}%</span>
             </div>
             <div className="progress-track">
@@ -289,18 +604,9 @@ function LiveRow({ live }: { live: LiveAssistant }) {
           color: var(--text-muted);
         }
         .spinner {
-          width: 10px;
-          height: 10px;
-          border: 2px solid var(--primary);
-          border-top-color: transparent;
-          border-radius: 50%;
           display: inline-block;
-          animation: spin 0.8s linear infinite;
-        }
-        @keyframes spin {
-          to {
-            transform: rotate(360deg);
-          }
+          color: var(--primary);
+          animation: yc-spin 0.85s linear infinite;
         }
         .progress-track {
           height: 4px;
@@ -355,11 +661,18 @@ function ToolCardView({ card }: { card: ToolCard }) {
     done: "完成",
     error: "失败",
   };
+  const statusIcon = card.status === "pending"
+    ? <ClockIcon size={14} />
+    : card.status === "running"
+      ? <LoaderIcon size={14} className="tool-spinner" />
+      : card.status === "error"
+        ? <CircleXIcon size={14} />
+        : <CircleCheckIcon size={14} />;
   return (
     <div className={`tool-card ${card.status}`}>
       <div className="tool-head">
         <span className="tool-icon">
-          <WrenchIcon size={14} />
+          {card.status === "running" ? statusIcon : <WrenchIcon size={14} />}
         </span>
         <span className="tool-name">{card.name}</span>
         <span className={`tool-status ${card.status}`}>
@@ -380,16 +693,28 @@ function ToolCardView({ card }: { card: ToolCard }) {
 
       <style jsx>{`
         .tool-card {
+          position: relative;
+          overflow: hidden;
           border: 1px solid var(--border);
           border-radius: 10px;
           padding: 8px 10px;
           background: var(--tool-call-bg);
+          animation: yc-fade-up 220ms var(--ease-standard) both;
         }
         .tool-card.pending {
           border-color: var(--status-attention);
         }
         .tool-card.running {
           border-color: var(--status-running);
+        }
+        .tool-card.running::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          background: linear-gradient(105deg, transparent 30%, color-mix(in srgb, var(--status-running) 8%, transparent) 50%, transparent 70%);
+          background-size: 220% 100%;
+          animation: yc-shimmer 1.8s ease-in-out infinite;
         }
         .tool-card.error {
           border-color: var(--status-unavailable);
@@ -403,7 +728,9 @@ function ToolCardView({ card }: { card: ToolCard }) {
         .tool-icon {
           color: var(--text-secondary);
           display: flex;
+          flex-shrink: 0;
         }
+        .tool-spinner { animation: yc-spin 0.85s linear infinite; color: var(--status-running); }
         .tool-name {
           font-weight: 600;
           font-family: var(--font-mono);

@@ -1,22 +1,46 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type {
   ChatMessage,
   SessionSummary,
   AgentEvent,
   ContentPart,
-  TextContentPart,
   FileUploadResponse,
+  PdfReadResponse,
 } from "@yoomclaw/protocol";
-import MessageStream, { type LiveAssistant } from "./MessageStream";
+import { classifyFileInput } from "@yoomclaw/protocol";
+import MessageStream, {
+  type LiveAssistant,
+  type ToolCard,
+  messageText,
+  toolCardsFromEvents,
+} from "./MessageStream";
 import SessionSidebar from "./SessionSidebar";
 import ComposeBar, { type ComposePrefill } from "./ComposeBar";
 import WindowFrame from "./WindowFrame";
 import SpiralLogo from "./SpiralLogo";
 import SettingsPanel from "./SettingsPanel";
-import { PanelLeftIcon, PlusIcon, ShieldIcon, WarningIcon } from "./icons";
+import WorkbenchPanel from "./WorkbenchPanel";
+import {
+  PanelLeftIcon,
+  PlusIcon,
+  ShieldIcon,
+  WarningIcon,
+  TaskIcon,
+  ExportIcon,
+  InfoIcon,
+} from "./icons";
 
 const GATEWAY_URL = "http://localhost:18789";
 const CONFIRM_MODE_KEY = "yoomclaw-confirm-mode";
+const SIDEBAR_WIDTH_KEY = "yoomclaw-sidebar-width";
+const DEFAULT_SIDEBAR_WIDTH = 264;
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 440;
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
+}
 
 /** 读取本地文件为 data URL，用于通过网关 /api/upload/file 上传。 */
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -28,11 +52,53 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+function contentFromParts(parts: ContentPart[]): string | ContentPart[] {
+  if (parts.length === 0) return "";
+  if (parts.every((part) => part.type === "text")) {
+    return parts.map((part) => (part.type === "text" ? part.text : "")).join("\n\n");
+  }
+  return parts;
+}
+
+function exportContent(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  return content.map((part) => {
+    if (part.type === "text") return part.text;
+    if (part.type === "image_url") return `![图片附件](${part.image_url.url})`;
+    return `[文件附件${part.file_url.fileId ? ` (${part.file_url.fileId})` : ""}](${part.file_url.url})`;
+  }).join("\n\n");
+}
+
+function markdownForSession(title: string, messages: ChatMessage[], events: AgentEvent[]): string {
+  const lines = [`# ${title || "YoomClaw 对话"}`, ""];
+  for (const message of messages) {
+    const role = message.role === "user" ? "用户" : message.role === "assistant" ? "YoomClaw" : message.role;
+    lines.push(`## ${role}`, "", exportContent(message.content), "");
+  }
+  const tools = toolCardsFromEvents(events);
+  if (tools.length > 0) {
+    lines.push("## 工具活动", "");
+    for (const tool of tools) {
+      lines.push(`- **${tool.name}** (${tool.status})`);
+      if (tool.result) lines.push("", "```text", tool.result, "```");
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function sortSessionSummaries(items: SessionSummary[]): SessionSummary[] {
+  return [...items].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
+}
+
 interface SessionData {
   id: string;
   title: string;
   messages: ChatMessage[];
-  runs?: Array<{ status: "running" | "completed" | "interrupted" | "failed" }>;
+  runs?: Array<{
+    status: "running" | "completed" | "interrupted" | "failed";
+    events?: AgentEvent[];
+  }>;
 }
 
 interface ConfirmDialog {
@@ -46,14 +112,36 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [currentMessages, setCurrentMessages] = useState<ChatMessage[]>([]);
+  const [historicalTools, setHistoricalTools] = useState<ToolCard[]>([]);
+  const [runEvents, setRunEvents] = useState<AgentEvent[]>([]);
+  const currentSessionIdRef = useRef<string | null>(null);
+  const currentSessionTitleRef = useRef("YoomClaw");
+  const sessionViewRevisionRef = useRef(0);
+  const sessionRefreshRequestRef = useRef(0);
+  const sessionDataRevisionRef = useRef(0);
+  const sessionMutationRevisionRef = useRef(new Map<string, number>());
+  const sessionMutationQueueRef = useRef(new Map<string, Promise<unknown>>());
+  const sessionCreationRef = useRef(false);
+  currentSessionIdRef.current = currentSessionId;
   const [streaming, setStreaming] = useState(false);
   const [live, setLive] = useState<LiveAssistant | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    return Number.isFinite(saved) && saved > 0
+      ? clampSidebarWidth(saved)
+      : DEFAULT_SIDEBAR_WIDTH;
+  });
+  const [sidebarResizing, setSidebarResizing] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prefill, setPrefill] = useState<ComposePrefill | null>(null);
+  const [editTargetIndex, setEditTargetIndex] = useState<number | null>(null);
   const [runNotice, setRunNotice] = useState<string | null>(null);
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  const [workspace, setWorkspace] = useState("");
   const [confirmMode, setConfirmMode] = useState<"confirm" | "no-confirm">(
     () =>
       (localStorage.getItem(CONFIRM_MODE_KEY) as "confirm" | "no-confirm") ||
@@ -63,9 +151,15 @@ export default function ChatPage() {
   confirmModeRef.current = confirmMode;
 
   const wsRef = useRef<WebSocket | null>(null);
+  const appShellRef = useRef<HTMLDivElement | null>(null);
+  const sidebarResizeRef = useRef<{ startX: number; startWidth: number; currentWidth: number } | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const pendingSidebarWidthRef = useRef<number | null>(null);
   const runIdRef = useRef<string | null>(null);
   const liveRef = useRef<LiveAssistant | null>(null);
   const disposedRef = useRef(false);
+  const wsGenerationRef = useRef(0);
+  const wsReconnectTimerRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -75,17 +169,88 @@ export default function ChatPage() {
 
   const apiBase = GATEWAY_URL;
 
+  useEffect(() => {
+    let alive = true;
+    void fetch(`${apiBase}/api/config`)
+      .then((res) => res.ok ? res.json() as Promise<{ workspace?: string }> : null)
+      .then((config) => {
+        if (alive && config?.workspace) setWorkspace(config.workspace);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [apiBase]);
+
+  useEffect(() => {
+    if (!workbenchOpen) return;
+    let alive = true;
+    let attempts = 0;
+    let retryTimer: number | null = null;
+    const loadWorkspace = () => {
+      void fetch(`${apiBase}/api/config`)
+        .then((res) => res.ok ? res.json() as Promise<{ workspace?: string }> : null)
+        .then((config) => {
+          if (!alive) return;
+          if (config?.workspace) {
+            setWorkspace(config.workspace);
+            return;
+          }
+          if (attempts < 5) {
+            attempts += 1;
+            retryTimer = window.setTimeout(loadWorkspace, 500);
+          }
+        })
+        .catch(() => {
+          if (alive && attempts < 5) {
+            attempts += 1;
+            retryTimer = window.setTimeout(loadWorkspace, 500);
+          }
+        });
+    };
+    loadWorkspace();
+    return () => {
+      alive = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [apiBase, workbenchOpen]);
+
   const refreshSessions = useCallback(async () => {
+    const requestId = ++sessionRefreshRequestRef.current;
+    const dataRevision = sessionDataRevisionRef.current;
     try {
       const res = await fetch(`${apiBase}/api/sessions`);
       if (res.ok) {
         const data = (await res.json()) as SessionSummary[];
-        setSessions(data);
-        if (data.length > 0 && !currentSessionId) {
+        if (
+          requestId !== sessionRefreshRequestRef.current ||
+          dataRevision !== sessionDataRevisionRef.current
+        ) {
+          return;
+        }
+        setSessions(sortSessionSummaries(data));
+        const currentId = currentSessionIdRef.current;
+        if (data.length > 0 && !currentId) {
           selectSession(data[0].id);
-        } else if (data.length === 0) {
+        } else if (data.length === 0 && !currentId) {
+          currentSessionIdRef.current = null;
           setCurrentSessionId(null);
           setCurrentMessages([]);
+          setHistoricalTools([]);
+          setRunEvents([]);
+          setRunNotice(null);
+        } else if (currentId && !data.some((session) => session.id === currentId)) {
+          sessionViewRevisionRef.current += 1;
+          currentSessionIdRef.current = null;
+          runIdRef.current = null;
+          liveRef.current = null;
+          setCurrentSessionId(null);
+          setCurrentMessages([]);
+          setHistoricalTools([]);
+          setRunEvents([]);
+          setLive(null);
+          setConfirmDialog(null);
+          setStreaming(false);
           setRunNotice(null);
         }
       }
@@ -97,16 +262,44 @@ export default function ChatPage() {
 
   const selectSession = useCallback(
     async (id: string) => {
+      const revision = ++sessionViewRevisionRef.current;
+      const previousSessionId = currentSessionIdRef.current;
+      if (previousSessionId && previousSessionId !== id && runIdRef.current) {
+        const socket = wsRef.current;
+        if (socket?.readyState === WebSocket.OPEN) {
+          try {
+            socket.send(JSON.stringify({
+              type: "chat.cancel",
+              sessionId: previousSessionId,
+              runId: runIdRef.current,
+            }));
+          } catch {}
+        }
+        runIdRef.current = null;
+        setStreaming(false);
+      }
+      currentSessionIdRef.current = id;
       setCurrentSessionId(id);
       liveRef.current = null;
       setLive(null);
+      setHistoricalTools([]);
       setConfirmDialog(null);
+      setEditTargetIndex(null);
       try {
         const res = await fetch(`${apiBase}/api/sessions/${id}`);
+        if (!res.ok) throw new Error(`session load failed: ${res.status}`);
         if (res.ok) {
           const data = (await res.json()) as SessionData;
+          if (
+            revision !== sessionViewRevisionRef.current ||
+            currentSessionIdRef.current !== id
+          ) {
+            return;
+          }
           setCurrentMessages(data.messages ?? []);
           const lastRun = data.runs?.[data.runs.length - 1];
+          setRunEvents(lastRun?.events ?? []);
+          setHistoricalTools(toolCardsFromEvents(lastRun?.events ?? []));
           setRunNotice(
             lastRun?.status === "interrupted"
               ? "上一轮任务在应用重启前已中断，可继续发送新任务。"
@@ -117,7 +310,15 @@ export default function ChatPage() {
         }
       } catch (err) {
         console.error("Failed to load session:", err);
+        if (
+          revision !== sessionViewRevisionRef.current ||
+          currentSessionIdRef.current !== id
+        ) {
+          return;
+        }
         setCurrentMessages([]);
+        setRunEvents([]);
+        setHistoricalTools([]);
         setRunNotice(null);
       }
     },
@@ -125,6 +326,35 @@ export default function ChatPage() {
   );
 
   const createSession = useCallback(async () => {
+    if (sessionCreationRef.current) return;
+    sessionCreationRef.current = true;
+    const previousSessionId = currentSessionIdRef.current;
+    const creationRevision = ++sessionViewRevisionRef.current;
+    if (previousSessionId && runIdRef.current) {
+      const socket = wsRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(JSON.stringify({
+            type: "chat.cancel",
+            sessionId: previousSessionId,
+            runId: runIdRef.current,
+          }));
+        } catch {}
+      }
+      runIdRef.current = null;
+      setStreaming(false);
+      liveRef.current = null;
+      setLive(null);
+    }
+    sessionDataRevisionRef.current += 1;
+    currentSessionIdRef.current = null;
+    setCurrentSessionId(null);
+    setCurrentMessages([]);
+    setHistoricalTools([]);
+    setRunEvents([]);
+    setRunNotice(null);
+    setEditTargetIndex(null);
+    setCreatingSession(true);
     try {
       const title = `新的对话 ${new Date().toLocaleString("zh-CN", {
         month: "2-digit",
@@ -137,40 +367,267 @@ export default function ChatPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
       });
-      if (res.ok) {
-        const session = (await res.json()) as SessionSummary;
-        setSessions((prev) => [session, ...prev]);
-        setCurrentSessionId(session.id);
-        setCurrentMessages([]);
-        setRunNotice(null);
+      if (!res.ok) throw new Error(`session creation failed: ${res.status}`);
+      const session = (await res.json()) as SessionSummary;
+      sessionDataRevisionRef.current += 1;
+      setSessions((prev) => sortSessionSummaries([session, ...prev]));
+      if (
+        creationRevision !== sessionViewRevisionRef.current ||
+        currentSessionIdRef.current !== null
+      ) {
+        return;
       }
+      sessionViewRevisionRef.current += 1;
+      currentSessionIdRef.current = session.id;
+      setCurrentSessionId(session.id);
+      setCurrentMessages([]);
+      setHistoricalTools([]);
+      setRunEvents([]);
+      setRunNotice(null);
+      setEditTargetIndex(null);
     } catch (err) {
       console.error("Failed to load session:", err);
+      if (
+        creationRevision === sessionViewRevisionRef.current &&
+        currentSessionIdRef.current === null &&
+        previousSessionId
+      ) {
+        currentSessionIdRef.current = previousSessionId;
+        setCurrentSessionId(previousSessionId);
+        void selectSession(previousSessionId);
+      } else if (creationRevision === sessionViewRevisionRef.current) {
+        setRunNotice("Session creation failed; please retry.");
+      }
+    } finally {
+      sessionCreationRef.current = false;
+      setCreatingSession(false);
     }
-  }, [apiBase]);
+  }, [apiBase, selectSession]);
+
+  const patchSession = useCallback(
+    async (id: string, patch: { title?: string; archived?: boolean; pinned?: boolean }) => {
+      const mutationRevision = (sessionMutationRevisionRef.current.get(id) ?? 0) + 1;
+      sessionMutationRevisionRef.current.set(id, mutationRevision);
+      const previous = sessionMutationQueueRef.current.get(id) ?? Promise.resolve();
+      const operation = previous.catch(() => undefined).then(async () => {
+        const res = await fetch(`${apiBase}/api/sessions/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (!res.ok) return null;
+        return (await res.json()) as SessionSummary;
+      });
+      sessionMutationQueueRef.current.set(id, operation);
+      try {
+        const updated = await operation;
+        if (
+          !updated ||
+          sessionMutationRevisionRef.current.get(id) !== mutationRevision
+        ) return null;
+        setSessions((previous) => sortSessionSummaries(previous.map((session) => (
+          session.id === id ? updated : session
+        ))));
+        return updated;
+      } finally {
+        if (sessionMutationQueueRef.current.get(id) === operation) {
+          sessionMutationQueueRef.current.delete(id);
+        }
+      }
+    },
+    [apiBase],
+  );
+
+  const renameSession = useCallback(
+    async (id: string, title: string) => {
+      const nextTitle = title.trim();
+      if (!nextTitle) return;
+      try {
+        await patchSession(id, { title: nextTitle });
+      } catch (err) {
+        console.error("Failed to rename session:", err);
+      }
+    },
+    [patchSession],
+  );
+
+  const updateSessionFlags = useCallback(
+    (id: string, patch: { pinned?: boolean }) => {
+      return patchSession(id, patch).catch((err) => {
+        console.error("Failed to update session flags:", err);
+        return null;
+      });
+    },
+    [patchSession],
+  );
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  const startSidebarResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!sidebarOpen) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    sidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+      currentWidth: sidebarWidth,
+    };
+    setSidebarResizing(true);
+  }, [sidebarOpen, sidebarWidth]);
+
+  const moveSidebarResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = sidebarResizeRef.current;
+    if (!resize) return;
+    const nextWidth = clampSidebarWidth(resize.startWidth + event.clientX - resize.startX);
+    resize.currentWidth = nextWidth;
+    pendingSidebarWidthRef.current = nextWidth;
+    if (resizeFrameRef.current !== null) return;
+    resizeFrameRef.current = window.requestAnimationFrame(() => {
+      resizeFrameRef.current = null;
+      const previewWidth = pendingSidebarWidthRef.current;
+      if (previewWidth !== null) {
+        appShellRef.current?.style.setProperty("--sidebar-width", `${previewWidth}px`);
+      }
+    });
+  }, []);
+
+  const finishSidebarResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = sidebarResizeRef.current;
+    if (!resize) return;
+    sidebarResizeRef.current = null;
+    pendingSidebarWidthRef.current = null;
+    if (resizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    }
+    appShellRef.current?.style.setProperty("--sidebar-width", `${resize.currentWidth}px`);
+    setSidebarWidth(resize.currentWidth);
+    setSidebarResizing(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (resizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(resizeFrameRef.current);
+    }
+  }, []);
+
+  const searchSessions = useCallback(
+    async (query: string): Promise<SessionSummary[] | null> => {
+      const trimmed = query.trim();
+      if (!trimmed) return null;
+      try {
+        const res = await fetch(`${apiBase}/api/sessions/search?q=${encodeURIComponent(trimmed)}`);
+        if (!res.ok) return null;
+        return (await res.json()) as SessionSummary[];
+      } catch {
+        return null;
+      }
+    },
+    [apiBase],
+  );
+
+  const exportCurrentSession = useCallback(async () => {
+    const session = sessions.find((item) => item.id === currentSessionId);
+    if (!session) return;
+    const markdown = markdownForSession(session.title, currentMessages, runEvents);
+    const safeTitle = (session.title || "yoomclaw-session")
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+      .slice(0, 80);
+    const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
+    if (claw?.saveTextFile) {
+      try {
+        await claw.saveTextFile({
+          fileName: `${safeTitle || "yoomclaw-session"}.md`,
+          content: markdown,
+        });
+        return;
+      } catch (error) {
+        console.warn("Native export failed; falling back to browser download", error);
+      }
+    }
+    const blob = new Blob(
+      [markdown],
+      { type: "text/markdown;charset=utf-8" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${safeTitle || "yoomclaw-session"}.md`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, [currentMessages, currentSessionId, runEvents, sessions]);
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        exportCurrentSession();
+      }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [exportCurrentSession]);
 
   const deleteSession = useCallback(
     async (id: string) => {
+      const deletingCurrent = currentSessionIdRef.current === id;
+      const runId = deletingCurrent ? runIdRef.current : null;
+      const socket = wsRef.current;
+      const mutationRevision = (sessionMutationRevisionRef.current.get(id) ?? 0) + 1;
+      sessionMutationRevisionRef.current.set(id, mutationRevision);
+      sessionDataRevisionRef.current += 1;
+      sessionRefreshRequestRef.current += 1;
+      if (deletingCurrent) {
+        sessionViewRevisionRef.current += 1;
+        if (runId && socket?.readyState === WebSocket.OPEN) {
+          try {
+            socket.send(JSON.stringify({
+              type: "chat.cancel",
+              sessionId: id,
+              runId,
+            }));
+          } catch {}
+        }
+        runIdRef.current = null;
+        liveRef.current = null;
+        setLive(null);
+        setConfirmDialog(null);
+        setStreaming(false);
+      }
       try {
-        await fetch(`${apiBase}/api/sessions/${id}`, { method: "DELETE" });
+        const res = await fetch(`${apiBase}/api/sessions/${id}`, { method: "DELETE" });
+        if (!res.ok) throw new Error(`session deletion failed: ${res.status}`);
         setSessions((prev) => prev.filter((s) => s.id !== id));
-        if (currentSessionId === id) {
+        if (currentSessionIdRef.current === id) {
+          currentSessionIdRef.current = null;
           setCurrentSessionId(null);
           setCurrentMessages([]);
+          setHistoricalTools([]);
+          setRunEvents([]);
           setRunNotice(null);
+          setEditTargetIndex(null);
         }
       } catch (err) {
         console.error("Failed to delete session:", err);
       }
     },
-    [apiBase, currentSessionId],
+    [apiBase],
   );
 
   // ===== WebSocket 连接 =====
   const sendConfirmMode = useCallback((mode: "confirm" | "no-confirm") => {
     const sock = wsRef.current;
     if (sock && sock.readyState === WebSocket.OPEN) {
-      sock.send(JSON.stringify({ type: "setConfirmMode", mode }));
+      try {
+        sock.send(JSON.stringify({ type: "setConfirmMode", mode }));
+      } catch {}
     }
   }, []);
 
@@ -180,20 +637,44 @@ export default function ChatPage() {
   }, [confirmMode, sendConfirmMode]);
 
   const connectWs = useCallback(() => {
+    if (disposedRef.current) return;
+    if (wsReconnectTimerRef.current !== null) {
+      window.clearTimeout(wsReconnectTimerRef.current);
+      wsReconnectTimerRef.current = null;
+    }
     const url = wsUrl(apiBase);
+    const generation = ++wsGenerationRef.current;
     const socket = new WebSocket(url);
     wsRef.current = socket;
+    const isCurrentSocket = () =>
+      !disposedRef.current &&
+      wsGenerationRef.current === generation &&
+      wsRef.current === socket;
     socket.onopen = () => {
+      if (!isCurrentSocket()) return;
       setConnected(true);
       sendConfirmMode(confirmModeRef.current);
       void refreshSessions();
     };
-    socket.onmessage = (e) => handleWsMessage(e.data.toString());
+    socket.onmessage = (e) => {
+      if (!isCurrentSocket()) return;
+      handleWsMessage(e.data.toString());
+    };
     socket.onclose = () => {
+      if (wsGenerationRef.current !== generation || wsRef.current !== socket) return;
       setConnected(false);
       wsRef.current = null;
       setStreaming(false);
-      if (!disposedRef.current) setTimeout(connectWs, 1500);
+      runIdRef.current = null;
+      liveRef.current = null;
+      setLive(null);
+      setConfirmDialog(null);
+      if (!disposedRef.current && wsReconnectTimerRef.current === null) {
+        wsReconnectTimerRef.current = window.setTimeout(() => {
+          wsReconnectTimerRef.current = null;
+          connectWs();
+        }, 1500);
+      }
     };
     socket.onerror = () => {
       /* 会紧接着触发 close */
@@ -205,7 +686,14 @@ export default function ChatPage() {
     connectWs();
     return () => {
       disposedRef.current = true;
-      wsRef.current?.close();
+      wsGenerationRef.current += 1;
+      if (wsReconnectTimerRef.current !== null) {
+        window.clearTimeout(wsReconnectTimerRef.current);
+        wsReconnectTimerRef.current = null;
+      }
+      const socket = wsRef.current;
+      wsRef.current = null;
+      socket?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectWs]);
@@ -214,6 +702,7 @@ export default function ChatPage() {
     l ?? { text: "", tools: [], progress: null };
 
   const applyEvent = useCallback((ev: AgentEvent) => {
+    setRunEvents((previous) => [...previous, ev]);
     const l = ensureLive(liveRef.current);
     let next: LiveAssistant;
     switch (ev.type) {
@@ -312,6 +801,9 @@ export default function ChatPage() {
   const commitLive = useCallback(() => {
     const l = liveRef.current;
     if (l) {
+      if (l.tools.length > 0) {
+        setHistoricalTools((previous) => [...previous, ...l.tools]);
+      }
       const text = l.text.trim();
       if (text || l.tools.length > 0) {
         setCurrentMessages((m) => [
@@ -336,16 +828,47 @@ export default function ChatPage() {
       } catch {
         return;
       }
+      if (!msg || typeof msg !== "object" || typeof msg.type !== "string") return;
+      const messageSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
+      if (messageSessionId && messageSessionId !== currentSessionIdRef.current) return;
       if (msg.type === "chat.event") {
-        applyEvent(msg.event as AgentEvent);
+        if (!msg.event || typeof msg.event !== "object") return;
+        const event = msg.event as Partial<AgentEvent>;
+        if (typeof event.type !== "string") return;
+        const eventRunId = typeof msg.runId === "string"
+          ? msg.runId
+          : typeof (event as { runId?: unknown }).runId === "string"
+            ? (event as { runId: string }).runId
+            : null;
+        if (!runIdRef.current || eventRunId !== runIdRef.current) return;
+        applyEvent(event as AgentEvent);
       } else if (msg.type === "chat.end") {
+        if (typeof msg.runId !== "string" || msg.runId !== runIdRef.current) return;
+        const completedTitle = currentSessionTitleRef.current;
         if (msg.status === "interrupted") applyEvent({ type: "error", message: "任务已中断" });
         if (msg.status === "failed") applyEvent({ type: "error", message: "任务执行失败" });
         commitLive();
+        if (msg.status !== "interrupted" && msg.status !== "failed") {
+          const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
+          if (claw?.getSettings && claw.notify) {
+            void claw.getSettings()
+              .then((settings) => {
+                if (settings.notifyOnComplete) {
+                  claw.notify("YoomClaw", `${completedTitle} 已完成`);
+                }
+              })
+              .catch(() => {});
+          }
+        }
         setStreaming(false);
         runIdRef.current = null;
         refreshSessions();
       } else if (msg.type === "error") {
+        if (
+          typeof msg.runId === "string"
+            ? msg.runId !== runIdRef.current
+            : !runIdRef.current
+        ) return;
         applyEvent({ type: "error", message: String(msg.message ?? "未知错误") });
         commitLive();
         setStreaming(false);
@@ -359,11 +882,13 @@ export default function ChatPage() {
   const stopStreaming = useCallback(() => {
     const sock = wsRef.current;
     if (sock && sock.readyState === WebSocket.OPEN && currentSessionId && runIdRef.current) {
-      sock.send(JSON.stringify({
-        type: "chat.cancel",
-        sessionId: currentSessionId,
-        runId: runIdRef.current,
-      }));
+      try {
+        sock.send(JSON.stringify({
+          type: "chat.cancel",
+          sessionId: currentSessionId,
+          runId: runIdRef.current,
+        }));
+      } catch {}
     }
     commitLive();
     setStreaming(false);
@@ -383,110 +908,363 @@ export default function ChatPage() {
     [createSession],
   );
 
+  const beginEditMessage = useCallback((index: number, message: ChatMessage) => {
+    if (message.role !== "user") return;
+    setEditTargetIndex(index);
+    setPrefill({ text: messageText(message.content), nonce: Date.now() });
+    setRunNotice("正在编辑这条消息；发送后会从这里创建新的会话分支。");
+  }, []);
+
   const sendMessage = useCallback(
     async (text: string, files: File[]) => {
-      if (!currentSessionId || streaming) return;
-      const sock = wsRef.current;
-      if (!sock || sock.readyState !== WebSocket.OPEN) {
+      const sessionIdAtStart = currentSessionIdRef.current;
+      if (!sessionIdAtStart || streaming || runIdRef.current) return false;
+      const initialSocket = wsRef.current;
+      if (!initialSocket || initialSocket.readyState !== WebSocket.OPEN) {
         console.warn("WebSocket 未连接，无法发送");
-        return;
+        return false;
       }
+      const sendRevision = ++sessionViewRevisionRef.current;
+      const branchIndex = editTargetIndex;
+      const isSendStillCurrent = () =>
+        currentSessionIdRef.current === sessionIdAtStart &&
+        sessionViewRevisionRef.current === sendRevision;
 
       // 构造多模态消息：文本 + 已上传的附件
-      const parts: ContentPart[] = [];
+      const providerParts: ContentPart[] = [];
+      const displayParts: ContentPart[] = [];
+      const attachmentFailures: string[] = [];
       const trimmed = text.trim();
-      if (trimmed) parts.push({ type: "text", text: trimmed });
+      if (trimmed) {
+        const textPart = { type: "text" as const, text: trimmed };
+        providerParts.push(textPart);
+        displayParts.push(textPart);
+      }
 
+      const filesToProcess: Array<{
+        file: File;
+        kind: "document" | "image" | "audio" | "video";
+        extension: string;
+      }> = [];
       for (const file of files) {
+        const descriptor = classifyFileInput(file.name, file.size, file.type);
+        if (!descriptor.accepted || !descriptor.kind) {
+          const failure = `[附件 ${file.name} ${descriptor.rejectionCode ?? "UNSUPPORTED_FILE_TYPE"}]`;
+          displayParts.push({ type: "text", text: failure });
+          providerParts.push({ type: "text", text: failure });
+          attachmentFailures.push(failure);
+          continue;
+        }
+        filesToProcess.push({
+          file,
+          kind: descriptor.kind,
+          extension: descriptor.extension,
+        });
+      }
+
+      for (const { file, kind, extension } of filesToProcess) {
+        const isPdf = kind === "document" && extension === "pdf";
         try {
+          if (isPdf) {
+            const pdfResp = await fetch(
+              apiBase + "/api/files/read-pdf?fileName=" + encodeURIComponent(file.name),
+              {
+              method: "POST",
+                headers: { "Content-Type": "application/pdf" },
+                body: file,
+                signal: AbortSignal.timeout(120_000),
+              },
+            );
+            if (pdfResp.ok) {
+              const parsed = (await pdfResp.json()) as PdfReadResponse;
+              const extracted = parsed.text.trim();
+              const content = extracted || "[PDF 中未提取到可复制文字，可能是扫描件]";
+              const limitNotice = parsed.truncated
+                ? "\n[PDF 内容已截断，仅发送前 50 页或 6 万字符]"
+                : "";
+              const pdfContext = "[本地 PDF 内容：" + file.name + "]\n" + content + limitNotice;
+              displayParts.push({
+                type: "text",
+                text: `[已解析 PDF：${file.name}，共 ${parsed.pages} 页${parsed.truncated ? "，内容已截断" : ""}]`,
+              });
+              providerParts.push({ type: "text", text: pdfContext });
+            } else {
+              const errorBody = (await pdfResp.json().catch(() => null)) as
+                | { message?: unknown; error?: unknown }
+                | null;
+              const detail = typeof errorBody?.message === "string"
+                ? `：${errorBody.message}`
+                : "";
+              const failure = `[附件 ${file.name} 本地 PDF 解析失败：HTTP ${pdfResp.status}${detail}]`;
+              displayParts.push({ type: "text", text: failure });
+              providerParts.push({ type: "text", text: failure });
+              attachmentFailures.push(failure);
+            }
+            continue;
+          }
           const dataUrl = await readFileAsDataUrl(file);
           const resp = await fetch(`${apiBase}/api/upload/file`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: dataUrl, source: "desktop" }),
+            body: JSON.stringify({
+              url: dataUrl,
+              source: "desktop",
+              fileName: file.name,
+              mimeType: file.type,
+              kind,
+              sizeBytes: file.size,
+            }),
+            signal: AbortSignal.timeout(90_000),
           });
           if (resp.ok) {
             const up = (await resp.json()) as FileUploadResponse;
-            if (file.type.startsWith("image/")) {
-              parts.push({ type: "image_url", image_url: { url: up.url } });
+            if (kind === "image") {
+              providerParts.push({ type: "image_url", image_url: { url: up.url } });
+              displayParts.push({ type: "image_url", image_url: { url: up.url } });
             } else {
-              parts.push({ type: "file_url", file_url: { url: up.url, fileId: up.fileId } });
+              providerParts.push({ type: "file_url", file_url: { url: up.url, fileId: up.fileId } });
+              displayParts.push({ type: "file_url", file_url: { url: up.url, fileId: up.fileId } });
             }
+            displayParts.push({ type: "text", text: `[已附加文件：${file.name}]` });
           } else {
-            parts.push({ type: "text", text: `[附件 ${file.name} 上传失败]` });
+            const errorBody = await resp.json().catch(() => null) as
+              | { code?: unknown }
+              | null;
+            const code = typeof errorBody?.code === "string" ? ` ${errorBody.code}` : "";
+            const failure = `[附件 ${file.name} 上传失败：HTTP ${resp.status}${code}]`;
+            displayParts.push({ type: "text", text: failure });
+            providerParts.push({ type: "text", text: failure });
+            attachmentFailures.push(failure);
           }
-        } catch {
-          parts.push({ type: "text", text: `[附件 ${file.name} 上传失败]` });
+        } catch (err) {
+          const reason = err instanceof DOMException && err.name === "TimeoutError"
+            ? (isPdf ? "本地 PDF 解析超时" : "上传超时")
+            : (isPdf ? "本地 PDF 解析请求失败" : "上传请求失败");
+          const failure = `[附件 ${file.name} ${reason}]`;
+          displayParts.push({ type: "text", text: failure });
+          providerParts.push({ type: "text", text: failure });
+          attachmentFailures.push(failure);
         }
       }
 
-      const userMsg: ChatMessage =
-        parts.length === 1 && parts[0].type === "text"
-          ? { role: "user", content: (parts[0] as TextContentPart).text }
-          : { role: "user", content: parts };
+      if (!isSendStillCurrent()) return false;
+      const userMsg: ChatMessage = {
+        role: "user",
+        content: contentFromParts(displayParts),
+      };
+      const messageForAgent: ChatMessage = {
+        ...userMsg,
+        agentContext: contentFromParts(providerParts),
+      };
 
-      setCurrentMessages((prev) => [...prev, userMsg]);
-
+      const allAttachmentsFailed = files.length > 0 && attachmentFailures.length >= files.length;
+      if (allAttachmentsFailed) {
+        if (!isSendStillCurrent()) return false;
+        liveRef.current = null;
+        setLive(null);
+        setConfirmDialog(null);
+        setStreaming(false);
+        setCurrentMessages((prev) => [
+          ...prev,
+          userMsg,
+          {
+            role: "assistant",
+            content: `附件处理失败，未启动 AI 任务。\n\n${attachmentFailures.join("\n")}\n\n请检查文件后重新上传。`,
+          },
+        ]);
+        return true;
+      }
+      if (branchIndex !== null) {
+        if (!isSendStillCurrent()) return false;
+        try {
+          const branchResponse = await fetch(`${apiBase}/api/sessions/${sessionIdAtStart}/branch`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messageIndex: branchIndex }),
+          });
+          if (!isSendStillCurrent()) return false;
+          if (!branchResponse.ok) {
+            setRunNotice("无法创建编辑分支，请重试。");
+            return false;
+          }
+          const branched = (await branchResponse.json()) as SessionSummary;
+          setSessions((previous) => sortSessionSummaries(previous.map((session) => (
+            session.id === branched.id ? branched : session
+          ))));
+          setCurrentMessages((previous) => previous.slice(0, branchIndex));
+          setHistoricalTools([]);
+          setRunEvents([]);
+          setEditTargetIndex(null);
+        } catch (err) {
+          console.error("Failed to create message branch:", err);
+          setRunNotice("无法创建编辑分支，请重试。");
+          return false;
+        }
+      }
+      if (!isSendStillCurrent()) return false;
+      const activeSocket = wsRef.current;
+      if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) {
+        setRunNotice("WebSocket disconnected; please retry.");
+        return false;
+      }
       const fresh: LiveAssistant = { text: "", tools: [], progress: null };
+      const runId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      runIdRef.current = runId;
+      try {
+        activeSocket.send(
+          JSON.stringify({
+            type: "chat.start",
+            sessionId: sessionIdAtStart,
+            runId,
+            message: messageForAgent,
+          }),
+        );
+      } catch (err) {
+        console.error("Failed to send chat message:", err);
+        runIdRef.current = null;
+        setStreaming(false);
+        liveRef.current = null;
+        setLive(null);
+        setCurrentMessages((previous) =>
+          previous[previous.length - 1] === userMsg
+            ? previous.slice(0, -1)
+            : previous,
+        );
+        setRunNotice("Message could not be sent; please retry.");
+        return false;
+      }
+      setRunNotice(null);
+      setCurrentMessages((prev) => [...prev, userMsg]);
+      setRunEvents([]);
       liveRef.current = fresh;
       setLive(fresh);
       setStreaming(true);
-      const runId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      runIdRef.current = runId;
-
-      sock.send(
-        JSON.stringify({
-          type: "chat.start",
-          sessionId: currentSessionId,
-          runId,
-          message: userMsg,
-        }),
-      );
+      return true;
     },
-    [currentSessionId, streaming, apiBase],
+    [streaming, apiBase, editTargetIndex],
   );
+
+  const retryAssistantMessage = useCallback((assistantIndex: number) => {
+    const userMessage = currentMessages
+      .slice(0, assistantIndex)
+      .reverse()
+      .find((message) => message.role === "user");
+    if (!userMessage) return;
+    const text = messageText(userMessage.content).trim();
+    if (!text) return;
+    void sendMessage(text, []);
+  }, [currentMessages, sendMessage]);
+
+  const retryLastTask = useCallback(() => {
+    if (streaming) return;
+    const userMessage = currentMessages
+      .slice()
+      .reverse()
+      .find((message) => message.role === "user");
+    if (!userMessage) return;
+    const text = messageText(userMessage.content).trim();
+    if (!text) return;
+    void sendMessage(text, []);
+  }, [currentMessages, sendMessage, streaming]);
 
   const confirmDecision = useCallback(
     (approved: boolean) => {
-      if (!confirmDialog || !currentSessionId) return;
-      wsRef.current?.send(
-        JSON.stringify({
-          type: "tool.decision",
-          sessionId: currentSessionId,
-          decision: { callId: confirmDialog.callId, approved },
-        }),
-      );
+      const socket = wsRef.current;
+      if (!confirmDialog || !currentSessionId || !runIdRef.current) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        setRunNotice("WebSocket disconnected; confirmation was not sent.");
+        return;
+      }
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "tool.decision",
+            sessionId: currentSessionId,
+            decision: { callId: confirmDialog.callId, approved },
+          }),
+        );
+      } catch {
+        setRunNotice("Confirmation could not be sent; please retry.");
+        return;
+      }
       setConfirmDialog(null);
     },
     [confirmDialog, currentSessionId],
   );
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const frame = window.requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: live ? "auto" : "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [currentMessages, live]);
 
   // 托盘菜单的"设置"入口
   useEffect(() => {
     const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
     if (!claw?.on) return;
-    return claw.on("menu:open-settings", () => setSettingsOpen(true));
-  }, []);
+    const removeSettingsListener = claw.on("menu:open-settings", () => setSettingsOpen(true));
+    const removeNewChatListener = claw.on("menu:new-chat", () => void createSession());
+    return () => {
+      removeSettingsListener();
+      removeNewChatListener();
+    };
+  }, [createSession]);
 
   const currentSession = sessions.find((s) => s.id === currentSessionId);
+  currentSessionTitleRef.current = currentSession?.title ?? "YoomClaw";
+  const lastRunEvent = runEvents
+    .slice()
+    .reverse()
+    .find((event): event is Extract<AgentEvent, { type: "run" }> => event.type === "run");
 
   return (
     <WindowFrame>
-      <div className="app-shell">
+      <div
+        ref={appShellRef}
+        className={`app-shell ${sidebarResizing ? "is-resizing-sidebar" : ""}`}
+        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      >
         <SessionSidebar
           sessions={sessions}
           currentId={currentSessionId}
           open={sidebarOpen}
           onSelect={selectSession}
           onCreate={createSession}
+          onRename={renameSession}
+          onPin={(id, pinned) => updateSessionFlags(id, { pinned })}
+          onSearch={searchSessions}
           onDelete={deleteSession}
           onClose={() => setSidebarOpen(false)}
           onOpenSettings={() => setSettingsOpen(true)}
         />
+        {sidebarOpen && (
+          <div
+            className={`sidebar-resizer ${sidebarResizing ? "active" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整侧边栏宽度"
+            aria-valuemin={MIN_SIDEBAR_WIDTH}
+            aria-valuemax={MAX_SIDEBAR_WIDTH}
+            aria-valuenow={Math.round(sidebarWidth)}
+            tabIndex={0}
+            onPointerDown={startSidebarResize}
+            onPointerMove={moveSidebarResize}
+            onPointerUp={finishSidebarResize}
+            onPointerCancel={finishSidebarResize}
+            onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.preventDefault();
+                setSidebarWidth((width) => clampSidebarWidth(width + (event.key === "ArrowRight" ? 16 : -16)));
+              }
+              if (event.key === "Home" || event.key === "End") {
+                event.preventDefault();
+                setSidebarWidth(event.key === "Home" ? MIN_SIDEBAR_WIDTH : MAX_SIDEBAR_WIDTH);
+              }
+            }}
+          />
+        )}
         <main className="chat-main">
           <header className="chat-header">
             <div className="header-left">
@@ -503,6 +1281,25 @@ export default function ChatPage() {
               </h1>
             </div>
             <div className="header-right">
+              <button
+                type="button"
+                className={`workbench-toggle ${workbenchOpen ? "active" : ""}`}
+                onClick={() => setWorkbenchOpen((open) => !open)}
+                title="打开任务工作台"
+              >
+                <TaskIcon size={15} />
+                <span>任务</span>
+              </button>
+              <button
+                type="button"
+                className="export-toggle"
+                onClick={exportCurrentSession}
+                title="导出当前对话（Ctrl+Shift+E）"
+                disabled={!currentSessionId}
+              >
+                <ExportIcon size={15} />
+                <span>导出</span>
+              </button>
               <span
                 className={`conn-chip ${connected ? "on" : "off"}`}
                 title={connected ? "已连接" : "连接中…"}
@@ -514,7 +1311,8 @@ export default function ChatPage() {
                 type="button"
                 className={`mode-chip ${confirmMode}`}
                 onClick={toggleConfirmMode}
-                title="切换工具执行模式；工作区内安全操作自动执行，高风险操作始终需要确认"
+                title="切换执行模式"
+                aria-label="切换工具执行模式；工作区内安全操作自动执行，高风险操作始终需要确认"
               >
                 <ShieldIcon size={16} />
                 {confirmMode === "no-confirm" ? "工作区自动" : "高风险确认"}
@@ -522,7 +1320,12 @@ export default function ChatPage() {
             </div>
           </header>
 
-          {runNotice && <div className="run-notice">{runNotice}</div>}
+          {runNotice && (
+            <div className="run-notice" role="status" aria-live="polite">
+              <InfoIcon size={14} />
+              <span>{runNotice}</span>
+            </div>
+          )}
 
           {!currentSessionId ? (
             <div className="empty-state">
@@ -546,18 +1349,39 @@ export default function ChatPage() {
               </div>
             </div>
           ) : (
-            <MessageStream messages={currentMessages} live={live ?? undefined} />
+            <MessageStream
+              messages={currentMessages}
+              historicalTools={historicalTools}
+              live={live ?? undefined}
+              onEditUser={beginEditMessage}
+              onRetryAssistant={retryAssistantMessage}
+            />
           )}
 
           <ComposeBar
             onSend={sendMessage}
             onStop={stopStreaming}
-            disabled={!currentSessionId || !connected}
+            ready={Boolean(currentSessionId) && connected && !creatingSession}
+            creating={creatingSession}
             streaming={streaming}
             prefill={prefill}
+            draftKey={currentSessionId}
           />
           <div ref={messagesEndRef} />
         </main>
+        {workbenchOpen && (
+          <WorkbenchPanel
+            workspace={workspace}
+            sessionTitle={currentSession?.title ?? "YoomClaw"}
+            messages={currentMessages}
+            runEvents={runEvents}
+            runStatus={lastRunEvent?.status ?? "idle"}
+            streaming={streaming}
+            onClose={() => setWorkbenchOpen(false)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onRetryTask={retryLastTask}
+          />
+        )}
       </div>
 
       {confirmDialog && (
@@ -613,6 +1437,38 @@ export default function ChatPage() {
           width: 100%;
           overflow: hidden;
         }
+        .app-shell.is-resizing-sidebar {
+          user-select: none;
+          cursor: col-resize;
+        }
+        .app-shell.is-resizing-sidebar :global(.sidebar) {
+          transition: none;
+        }
+        .sidebar-resizer {
+          position: relative;
+          flex: 0 0 8px;
+          width: 8px;
+          margin: 0 -4px;
+          z-index: 5;
+          cursor: col-resize;
+          touch-action: none;
+        }
+        .sidebar-resizer::after {
+          content: "";
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 3px;
+          width: 2px;
+          border-radius: 999px;
+          background: transparent;
+          transition: background var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard);
+        }
+        .sidebar-resizer:hover::after,
+        .sidebar-resizer.active::after {
+          background: var(--primary);
+          box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
+        }
         .chat-main {
           flex: 1;
           display: flex;
@@ -632,13 +1488,18 @@ export default function ChatPage() {
           flex-shrink: 0;
         }
         .run-notice {
+          display: flex;
+          align-items: center;
+          gap: 7px;
           flex-shrink: 0;
           padding: 8px 16px;
           border-bottom: 1px solid var(--border);
           background: color-mix(in srgb, var(--warning) 10%, var(--bg));
           color: var(--warning);
           font-size: 12px;
+          animation: yc-fade-up 220ms var(--ease-standard) both;
         }
+        .run-notice :global(svg) { flex-shrink: 0; }
         /* 三段式：左侧导航组 / 右侧状态组 */
         .header-left {
           display: flex;
@@ -654,6 +1515,52 @@ export default function ChatPage() {
           flex-shrink: 0;
           -webkit-app-region: no-drag;
         }
+        .workbench-toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          height: 28px;
+          padding: 0 10px;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          color: var(--text-secondary);
+          background: transparent;
+          font-size: 12px;
+          cursor: pointer;
+          transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+        }
+        .workbench-toggle:hover,
+        .workbench-toggle.active {
+          border-color: var(--primary);
+          color: var(--primary);
+          background: color-mix(in srgb, var(--primary) 10%, transparent);
+        }
+        .workbench-toggle.active { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 10%, transparent); }
+        .workbench-toggle :global(svg) { transition: transform 260ms var(--ease-emphasized); }
+        .workbench-toggle.active :global(svg) { transform: rotate(-8deg) scale(1.06); }
+        .export-toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          height: 28px;
+          padding: 0 9px;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          color: var(--text-secondary);
+          background: transparent;
+          font-size: 12px;
+          cursor: pointer;
+          transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+        }
+        .export-toggle:hover:not(:disabled) {
+          border-color: var(--primary);
+          color: var(--primary);
+          background: color-mix(in srgb, var(--primary) 10%, transparent);
+        }
+        .export-toggle:disabled { opacity: .45; cursor: not-allowed; }
+        .export-toggle:hover:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 8%, transparent); }
+        .export-toggle :global(svg) { transition: transform 220ms var(--ease-emphasized); }
+        .export-toggle:hover:not(:disabled) :global(svg) { transform: translateY(1px); }
         /* 图标按钮统一 32×32、圆角 8 */
         .header-btn {
           width: 32px;
@@ -697,6 +1604,7 @@ export default function ChatPage() {
         }
         .conn-chip.on .conn-dot {
           background: var(--success);
+          animation: yc-pulse 2.4s ease-in-out infinite;
         }
         /* 确认模式 chip：盾牌图标 + 文字；放行态转警示色 */
         .mode-chip {
@@ -731,6 +1639,7 @@ export default function ChatPage() {
           justify-content: center;
           gap: 12px;
           color: var(--text-secondary);
+          animation: yc-fade-up 280ms var(--ease-standard) both;
         }
         .empty-state :global(svg) {
           color: var(--primary);
@@ -791,6 +1700,7 @@ export default function ChatPage() {
           justify-content: center;
           z-index: 100;
           padding: 20px;
+          animation: yc-fade-up 160ms var(--ease-standard) both;
         }
         .modal {
           width: 440px;
@@ -800,6 +1710,7 @@ export default function ChatPage() {
           border-radius: 14px;
           padding: 20px;
           box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+          animation: yc-pop 220ms var(--ease-emphasized) both;
         }
         .modal-head {
           display: flex;
@@ -900,6 +1811,9 @@ export default function ChatPage() {
         }
         .btn:hover {
           filter: brightness(1.08);
+        }
+        @media (max-width: 768px) {
+          .sidebar-resizer { display: none; }
         }
       `}</style>
     </WindowFrame>
