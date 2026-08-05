@@ -48,6 +48,10 @@
   --motion-fast: 140ms;
   --motion-normal: 220ms;
 
+  /* 聊天内容列：消息、工具卡片、附件和输入框共用同一条轨道 */
+  --chat-content-width: 860px;
+  --chat-content-gutter: 24px;
+
   --status-running: #4a9eff;
   --status-attention: #d29922;
   --status-completed: #3fb950;
@@ -161,6 +165,52 @@ pre {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
+}
+
+/* Shared chat row geometry. Keep this global because rows are rendered by
+   separate React components (normal messages, live output and tool history). */
+.message-row {
+  display: flex;
+  width: 100%;
+  max-width: calc(var(--chat-content-width) + var(--chat-content-gutter) + var(--chat-content-gutter));
+  min-width: 0;
+  margin: 0 auto 18px;
+  padding: 0 var(--chat-content-gutter);
+  gap: 12px;
+  align-items: flex-start;
+  animation: yc-fade-up 220ms var(--ease-standard) both;
+}
+
+.message-row.user {
+  justify-content: flex-end;
+}
+
+.message-avatar {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  margin-top: 2px;
+  color: var(--primary);
+}
+
+.message-bubble {
+  min-width: 0;
+  max-width: calc(100% - 36px);
+  flex: 1 1 auto;
+  padding: 2px 0;
+}
+
+.message-row.user .message-bubble {
+  max-width: min(100%, 720px);
+  flex: 0 1 auto;
+  padding: 10px 14px;
+  color: var(--text);
+  background: var(--bg-element);
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 
 @keyframes yc-fade-up {

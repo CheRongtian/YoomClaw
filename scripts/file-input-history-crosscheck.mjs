@@ -14,10 +14,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DEFAULT_RPA_SCRIPT = "C:\\Users\\12992\\Desktop\\work\\code\\web-automation\\scripts\\collect-jimo-history-rpa.mjs";
+const DEFAULT_RPA_SCRIPT = process.env.YOOMCLAW_RPA_SCRIPT?.trim() || "collect-jimo-history-rpa.mjs";
 const DEFAULT_CDP = "http://127.0.0.1:9222";
 const DEFAULT_MAX_RECORDS = 20;
-const TEST_MARKER = "File-input regression test";
+const DEFAULT_TEST_MARKER = "File-input regression test";
 
 function parseArgs(argv) {
   const args = {
@@ -112,39 +112,97 @@ function runRpa({ script, cdp, output, maxRecords, robotKeyword }) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const live = await readJson(args.liveReport);
-  await fs.access(args.rpaScript);
+  const reportMarker = live.testMarker ?? live.result?.testMarker;
+  const testMarker = typeof reportMarker === "string" && reportMarker.trim()
+    ? reportMarker.trim()
+    : DEFAULT_TEST_MARKER;
+  const expectations = live.expectations && typeof live.expectations === "object" ? live.expectations : {};
   const rpaOutput = rpaOutputPath(args.output);
-  await runRpa({
-    script: args.rpaScript,
-    cdp: args.cdp,
-    output: rpaOutput,
-    maxRecords: args.maxRecords,
-    robotKeyword: args.robotKeyword,
-  });
+  let history;
+  try {
+    await fs.access(args.rpaScript);
+    await runRpa({
+      script: args.rpaScript,
+      cdp: args.cdp,
+      output: rpaOutput,
+      maxRecords: args.maxRecords,
+      robotKeyword: args.robotKeyword,
+    });
+    history = await readJson(rpaOutput);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = /CDP|登录|认证|Chrome|timeout|超时|not found|找不到/i.test(message) ? "blocked" : "failed";
+    const report = {
+      generatedAt: new Date().toISOString(),
+      status,
+      liveReport: args.liveReport,
+      rpaOutput,
+      testMarker,
+      crossCheck: {
+        rpaCompleted: false,
+        detailsCollected: false,
+        detailErrors: 0,
+        unicodeClean: false,
+      },
+      error: message,
+    };
+    await fs.writeFile(args.output, JSON.stringify(report, null, 2), "utf8");
+    console.log(`History cross-check report: ${args.output}`);
+    console.log(JSON.stringify(report.crossCheck));
+    process.exitCode = 1;
+    return;
+  }
 
-  const history = await readJson(rpaOutput);
   const records = Array.isArray(history.records) ? history.records : [];
   const markerRecords = records
     .map((record, index) => ({ record, index }))
-    .filter(({ record }) => recordText(record).includes(TEST_MARKER));
+    .filter(({ record }) => recordText(record).includes(testMarker));
   const selectedFileNames = [...new Set(
-    (Array.isArray(live.cases) ? live.cases : [])
-      .flatMap((item) => Array.isArray(item.files) ? item.files.map(basename) : []),
+    [
+      ...(Array.isArray(live.cases) ? live.cases.flatMap((item) => Array.isArray(item.files) ? item.files.map(basename) : []) : []),
+      ...(live.inputFile?.fileName ? [live.inputFile.fileName] : []),
+      ...(live.result?.inputFile?.fileName ? [live.result.inputFile.fileName] : []),
+    ],
   )].filter(Boolean);
+  const expectedFileNames = [...new Set([
+    ...selectedFileNames,
+    ...(Array.isArray(expectations.fileNames) ? expectations.fileNames.map(basename) : []),
+  ])].filter(Boolean);
   const filenameRecords = records
     .map((record, index) => ({ record, index, text: recordText(record) }))
-    .filter(({ text }) => selectedFileNames.some((fileName) => text.includes(fileName)));
+    .filter(({ text }) => expectedFileNames.some((fileName) => text.includes(fileName)));
+  const markerTexts = markerRecords.map(({ record }) => recordText(record));
+  const expectedTools = Array.isArray(expectations.toolNames) ? expectations.toolNames.filter((value) => typeof value === "string" && value.trim()) : [];
+  const toolMatches = expectedTools.map((tool) => ({
+    tool,
+    found: records.some((record) => recordText(record).toLowerCase().includes(tool.toLowerCase())),
+  }));
+  const detailTextFound = markerRecords.some(({ record }) => typeof record?.detail?.text === "string" && record.detail.text.trim().length > 0);
+  const markerDetailRecords = markerRecords.filter(({ record }) => typeof record?.detail?.text === "string" && record.detail.text.includes(testMarker));
+  const markerDetailTexts = markerDetailRecords.map(({ record }) => record.detail.text);
+  const markerDetailFileFound = expectedFileNames.length === 0
+    || markerDetailTexts.some((text) => expectedFileNames.some((fileName) => text.includes(fileName)));
+  const markerDetailToolMatches = expectedTools.map((tool) => ({
+    tool,
+    found: markerDetailTexts.some((text) => text.toLowerCase().includes(tool.toLowerCase())),
+  }));
+  const replacementCharCount = (text) => [...String(text ?? "")].filter((character) => character.codePointAt(0) === 0xFFFD).length;
+  const allReplacementChars = records.reduce((count, record) => count + replacementCharCount(recordText(record)), 0);
+  const markerDetailReplacementChars = markerDetailTexts.reduce((count, text) => count + replacementCharCount(text), 0);
+  const markerDetailUnicodeClean = markerDetailReplacementChars === 0;
   const report = {
     generatedAt: new Date().toISOString(),
+    status: "failed",
     liveReport: args.liveReport,
     rpaOutput,
-    testMarker: TEST_MARKER,
+    testMarker,
     live: {
       counts: live.counts ?? null,
       sessionIds: (Array.isArray(live.cases) ? live.cases : [])
-        .map((item) => item?.details?.sessionId)
+        .map((item) => item?.details?.sessionId ?? item?.detail?.sessionId)
         .filter((value) => typeof value === "string"),
-      selectedFileNames,
+      selectedFileNames: expectedFileNames,
+      expectations,
     },
     history: {
       collectedAt: history.collectedAt ?? null,
@@ -152,16 +210,53 @@ async function main() {
       detailErrors: Array.isArray(history.errors) ? history.errors.length : 0,
       markerRecordIndexes: markerRecords.map(({ index }) => index),
       filenameRecordIndexes: filenameRecords.map(({ index }) => index),
+      detailTextFound,
+      markerTextLengths: markerTexts.map((text) => text.length),
+      markerDetailIndexes: markerDetailRecords.map(({ index }) => index),
+      markerDetailTextLengths: markerDetailTexts.map((text) => text.length),
+      replacementCharCount: allReplacementChars,
+      markerDetailReplacementCharCount: markerDetailReplacementChars,
+      toolMatches,
+      markerDetailToolMatches,
     },
     crossCheck: {
       rpaCompleted: true,
       testMarkerFound: markerRecords.length > 0,
       selectedFilenameFound: filenameRecords.length > 0,
+      sessionTitleFound: typeof expectations.sessionTitleContains !== "string"
+        || !expectations.sessionTitleContains
+        || records.some((record) => recordText(record).includes(expectations.sessionTitleContains)),
+      userMessageFound: typeof expectations.userMessageContains !== "string"
+        || !expectations.userMessageContains
+        || records.some((record) => recordText(record).includes(expectations.userMessageContains)),
+      agentReplyFound: detailTextFound,
+      expectedToolsFound: toolMatches.every((item) => item.found),
+      markerDetailFound: markerDetailRecords.length > 0,
+      markerDetailFileFound,
+      markerDetailToolsFound: markerDetailToolMatches.every((item) => item.found),
+      detailsCollected: history.detailsCollected === true,
+      detailErrors: Array.isArray(history.errors) ? history.errors.length : 0,
+      unicodeClean: markerDetailUnicodeClean,
+      markerDetailUnicodeClean,
     },
   };
+  const passed = report.crossCheck.rpaCompleted
+    && report.crossCheck.detailsCollected
+    && report.crossCheck.detailErrors === 0
+    && report.crossCheck.unicodeClean
+    && report.crossCheck.sessionTitleFound
+    && report.crossCheck.userMessageFound
+    && report.crossCheck.agentReplyFound
+    && report.crossCheck.expectedToolsFound
+    && report.crossCheck.markerDetailFound
+    && report.crossCheck.markerDetailFileFound
+    && report.crossCheck.markerDetailToolsFound
+    && (report.crossCheck.testMarkerFound || report.crossCheck.selectedFilenameFound);
+  report.status = passed ? "passed" : "failed";
   await fs.writeFile(args.output, JSON.stringify(report, null, 2), "utf8");
   console.log(`History cross-check report: ${args.output}`);
   console.log(JSON.stringify(report.crossCheck));
+  if (!passed) process.exitCode = 1;
 }
 
 main().catch((error) => {

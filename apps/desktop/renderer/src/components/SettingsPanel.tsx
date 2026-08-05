@@ -48,6 +48,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
             <button
               key={id}
               className={`nav-item ${tab === id ? "active" : ""}`}
+              data-testid={`settings-tab-${id}`}
               onClick={() => setTab(id)}
             >
               <Icon size={15} />
@@ -61,7 +62,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
             <span className="sp-title">
               {TABS.find((t) => t.id === tab)?.label}
             </span>
-            <button className="sp-close" onClick={onClose} aria-label="关闭">
+            <button className="sp-close" data-testid="settings-close" onClick={onClose} aria-label="关闭">
               <CloseIcon size={15} />
             </button>
           </header>

@@ -13,6 +13,7 @@ export interface SessionRepository {
 export class FileSessionRepository implements SessionRepository {
   private readonly sessionsDir: string;
   private readonly legacyFile: string;
+  private readonly migrationMarker: string;
   private migrated = false;
 
   constructor(
@@ -20,6 +21,7 @@ export class FileSessionRepository implements SessionRepository {
     private readonly legacyWorkspace?: string,
   ) {
     this.sessionsDir = ensureAgentLayout(dataDir).sessionsDir;
+    this.migrationMarker = path.join(this.sessionsDir, ".legacy-sessions-v1.migrated");
     this.legacyFile = path.join(
       legacyWorkspace ?? dataDir,
       ".claw-data",
@@ -40,13 +42,32 @@ export class FileSessionRepository implements SessionRepository {
       }
     }
 
-    if (!this.migrated) {
+    if (!this.migrated && !fs.existsSync(this.migrationMarker)) {
+      const legacy = this.readLegacy();
+      // A malformed legacy file should remain available for a later repair;
+      // do not mark the migration complete when it could not be read.
+      if (legacy === undefined) return sessions;
+
       this.migrated = true;
       const existing = new Set(sessions.map((session) => session.id));
-      for (const legacy of this.readLegacy()) {
-        if (existing.has(legacy.id)) continue;
-        sessions.push(legacy);
-        this.save(legacy);
+      for (const session of legacy) {
+        if (existing.has(session.id)) continue;
+        sessions.push(session);
+        this.save(session);
+        existing.add(session.id);
+      }
+
+      // Keep the legacy file as a recoverable backup, but make the migration
+      // durable so deleting an imported session cannot cause it to reappear
+      // after the next Gateway restart.
+      try {
+        fs.writeFileSync(
+          this.migrationMarker,
+          JSON.stringify({ version: 1, source: this.legacyFile, migratedAt: Date.now() }),
+          "utf8",
+        );
+      } catch (error) {
+        console.error("[SessionRepository] failed to write legacy migration marker:", error);
       }
     }
     return sessions;
@@ -66,7 +87,7 @@ export class FileSessionRepository implements SessionRepository {
     return true;
   }
 
-  private readLegacy(): Session[] {
+  private readLegacy(): Session[] | undefined {
     if (!fs.existsSync(this.legacyFile)) return [];
     try {
       const raw = JSON.parse(fs.readFileSync(this.legacyFile, "utf8"));
@@ -75,7 +96,7 @@ export class FileSessionRepository implements SessionRepository {
         : [];
     } catch (error) {
       console.error("[SessionRepository] legacy session migration failed:", error);
-      return [];
+      return undefined;
     }
   }
 }

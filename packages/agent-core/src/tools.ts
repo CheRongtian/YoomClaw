@@ -10,8 +10,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import type { ToolDefinition, ToolRisk, ToolsetId } from "@yoomclaw/protocol";
+import { TextDecoder, promisify } from "node:util";
+import type { SafetyMode, ToolDefinition, ToolRisk, ToolsetId } from "@yoomclaw/protocol";
 import {
   resolveInWorkspace,
   judgeCommand,
@@ -22,8 +22,75 @@ import type { MemoryStore, SkillStore, MemoryStoreName } from "./config.js";
 import { MEMORY_TOOLS } from "./memory-tools.js";
 import { SKILL_TOOLS } from "./skill-tools.js";
 import { BROWSER_TOOLS } from "./browser-tools.js";
+import { ADVANCED_TOOLS } from "./advanced-tools.js";
+import type { ToolServices } from "./services.js";
+import { moveToTrash } from "./trash.js";
 
 const execAsync = promisify(exec);
+
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const utf16leDecoder = new TextDecoder("utf-16le");
+const utf16beDecoder = new TextDecoder("utf-16be");
+const gb18030Decoder = new TextDecoder("gb18030");
+
+/**
+ * Decode bytes emitted by a shell command without losing non-ASCII text.
+ *
+ * Windows cmd.exe uses the active OEM code page for redirected output (CP936
+ * on Chinese Windows), while child_process.exec assumes UTF-8 when its
+ * default string encoding is used. Keep the bytes until here so we can honor
+ * UTF-8/UTF-16 output from modern tools and fall back to the Windows Chinese
+ * code page for legacy cmd.exe output.
+ */
+export function decodeCommandOutput(value: Buffer | string | undefined): string {
+  if (value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (value.length === 0) return "";
+
+  if (value.length >= 2 && value[0] === 0xff && value[1] === 0xfe) {
+    return utf16leDecoder.decode(value.subarray(2));
+  }
+  if (value.length >= 2 && value[0] === 0xfe && value[1] === 0xff) {
+    return utf16beDecoder.decode(value.subarray(2));
+  }
+  if (
+    value.length >= 3 &&
+    value[0] === 0xef &&
+    value[1] === 0xbb &&
+    value[2] === 0xbf
+  ) {
+    return new TextDecoder("utf-8").decode(value.subarray(3));
+  }
+
+  const endian = detectUtf16WithoutBom(value);
+  if (endian === "le") return utf16leDecoder.decode(value);
+  if (endian === "be") return utf16beDecoder.decode(value);
+
+  try {
+    return utf8Decoder.decode(value);
+  } catch {
+    // Legacy cmd.exe output on Simplified Chinese Windows is GBK, which is a
+    // subset of GB18030 and is available through the platform TextDecoder.
+    return gb18030Decoder.decode(value);
+  }
+}
+
+function detectUtf16WithoutBom(value: Buffer): "le" | "be" | null {
+  const pairCount = Math.floor(value.length / 2);
+  if (pairCount < 4) return null;
+
+  let evenZeroes = 0;
+  let oddZeroes = 0;
+  for (let i = 0; i < pairCount * 2; i += 2) {
+    if (value[i] === 0) evenZeroes += 1;
+    if (value[i + 1] === 0) oddZeroes += 1;
+  }
+
+  const threshold = Math.max(2, Math.floor(pairCount * 0.25));
+  if (oddZeroes >= threshold && evenZeroes <= Math.floor(pairCount * 0.1)) return "le";
+  if (evenZeroes >= threshold && oddZeroes <= Math.floor(pairCount * 0.1)) return "be";
+  return null;
+}
 
 export interface ToolContext {
   sessionId: string;
@@ -33,6 +100,12 @@ export interface ToolContext {
   memory?: MemoryStore;
   skills?: SkillStore;
   browser?: BrowserToolController;
+  /** Permission policy for this run; omitted by legacy/direct tool callers. */
+  safetyMode?: SafetyMode;
+  /** Optional adapters for provider-backed and orchestrated tools. */
+  services?: ToolServices;
+  /** Registry visible to orchestration tools; never exposed to the model. */
+  toolRegistry?: BuiltinTool[];
 }
 
 export interface BrowserToolController {
@@ -49,6 +122,10 @@ export interface BrowserToolController {
 export interface ToolOutcome {
   result: string;
   isError: boolean;
+  code?: string;
+  metadata?: Record<string, unknown>;
+  /** Optional per-tool result cap; the Agent still enforces a hard upper bound. */
+  resultLimit?: number;
 }
 
 export interface BuiltinTool {
@@ -73,6 +150,12 @@ function argStr(args: Record<string, unknown>, key: string): string | null {
   return typeof v === "string" && v.trim() ? v : null;
 }
 
+function resolveToolPath(ctx: ToolContext, target: string) {
+  return resolveInWorkspace(ctx.workspace, target, {
+    allowOutsideWorkspace: ctx.safetyMode === "full-access",
+  });
+}
+
 // ===== read_file =====
 
 const readFile: BuiltinTool = {
@@ -84,7 +167,7 @@ const readFile: BuiltinTool = {
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "相对于工作目录的文件路径" },
+        path: { type: "string", description: "默认相对于工作目录；完全访问权限下也可使用绝对路径" },
         offset: { type: "string", description: "起始行号，从 1 开始，可选" },
         limit: { type: "string", description: "读取行数，默认 500，可选" },
       },
@@ -95,7 +178,7 @@ const readFile: BuiltinTool = {
     const p = argStr(args, "path");
     if (!p) return fail("缺少参数 path");
 
-    const sb = resolveInWorkspace(ctx.workspace, p);
+    const sb = resolveToolPath(ctx, p);
     if (!sb.ok) return fail(sb.reason);
 
     try {
@@ -147,7 +230,7 @@ const writeFile: BuiltinTool = {
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "相对于工作目录的文件路径" },
+        path: { type: "string", description: "默认相对于工作目录；完全访问权限下也可使用绝对路径" },
         content: { type: "string", description: "要写入的完整内容" },
       },
       required: ["path", "content"],
@@ -162,7 +245,7 @@ const writeFile: BuiltinTool = {
     const content = typeof args.content === "string" ? args.content : null;
     if (content === null) return fail("缺少参数 content");
 
-    const sb = resolveInWorkspace(ctx.workspace, p);
+    const sb = resolveToolPath(ctx, p);
     if (!sb.ok) return fail(sb.reason);
 
     try {
@@ -186,7 +269,7 @@ const editFile: BuiltinTool = {
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "相对于工作目录的文件路径" },
+        path: { type: "string", description: "默认相对于工作目录；完全访问权限下也可使用绝对路径" },
         old_text: { type: "string", description: "要被替换的原文，需唯一" },
         new_text: { type: "string", description: "替换后的新文本" },
       },
@@ -208,7 +291,7 @@ const editFile: BuiltinTool = {
       return fail("old_text 与 new_text 相同，无需修改");
     }
 
-    const sb = resolveInWorkspace(ctx.workspace, p);
+    const sb = resolveToolPath(ctx, p);
     if (!sb.ok) return fail(sb.reason);
 
     try {
@@ -226,6 +309,46 @@ const editFile: BuiltinTool = {
   },
 };
 
+// ===== delete_file =====
+
+const deleteFile: BuiltinTool = {
+  risk: "confirm",
+  definition: {
+    name: "delete_file",
+    description: "将指定文件移到系统回收站；完全访问权限下也可以处理工作区外的文件。",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "文件路径，可使用绝对路径" },
+      },
+      required: ["path"],
+    },
+  },
+  assess(args) {
+    return `将文件 ${String(args.path)} 移到系统回收站（可恢复），需要确认`;
+  },
+  async run(args, ctx) {
+    const p = argStr(args, "path");
+    if (!p) return fail("缺少参数 path");
+
+    const sb = resolveToolPath(ctx, p);
+    if (!sb.ok) return fail(sb.reason);
+
+    try {
+      const stat = await fs.stat(sb.resolved);
+      if (stat.isDirectory()) return fail(`${p} 是目录，delete_file 只删除文件`);
+      if (ctx.services?.trash) {
+        await ctx.services.trash.move(sb.resolved);
+      } else {
+        await moveToTrash(sb.resolved);
+      }
+      return ok(`已将 ${p} 移到系统回收站，可从回收站恢复`);
+    } catch (err) {
+      return fail(`移到回收站失败：${(err as Error).message}`);
+    }
+  },
+};
+
 // ===== list_dir =====
 
 const listDir: BuiltinTool = {
@@ -236,13 +359,13 @@ const listDir: BuiltinTool = {
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string", description: "相对路径，默认为工作目录根" },
+        path: { type: "string", description: "默认相对路径；完全访问权限下也可使用绝对路径，省略时为工作目录根" },
       },
     },
   },
   async run(args, ctx) {
     const p = argStr(args, "path") ?? ".";
-    const sb = resolveInWorkspace(ctx.workspace, p);
+    const sb = resolveToolPath(ctx, p);
     if (!sb.ok) return fail(sb.reason);
 
     try {
@@ -280,12 +403,12 @@ const grep: BuiltinTool = {
   risk: "safe",
   definition: {
     name: "grep",
-    description: "在工作目录内按正则搜索文件内容，返回匹配的文件与行号。",
+    description: "按正则搜索文件内容，默认在工作目录内；完全访问权限下也可搜索工作区外路径。",
     parameters: {
       type: "object",
       properties: {
         pattern: { type: "string", description: "正则表达式" },
-        path: { type: "string", description: "搜索起点，默认工作目录根" },
+        path: { type: "string", description: "搜索起点，默认工作目录根；完全访问权限下可使用绝对路径" },
         glob: { type: "string", description: '文件名过滤，如 "*.ts"，可选' },
       },
       required: ["pattern"],
@@ -296,7 +419,7 @@ const grep: BuiltinTool = {
     if (!pattern) return fail("缺少参数 pattern");
 
     const startRel = argStr(args, "path") ?? ".";
-    const sb = resolveInWorkspace(ctx.workspace, startRel);
+    const sb = resolveToolPath(ctx, startRel);
     if (!sb.ok) return fail(sb.reason);
 
     let re: RegExp;
@@ -333,7 +456,7 @@ const grep: BuiltinTool = {
       }
       for (const e of entries) {
         if (hits.length >= 100) return;
-        if (e.name.startsWith(".") && e.name !== ".env.example") continue;
+        if (ctx.safetyMode !== "full-access" && e.name.startsWith(".") && e.name !== ".env.example") continue;
         const full = path.join(dir, e.name);
         if (e.isDirectory()) {
           if (skip.has(e.name)) continue;
@@ -380,7 +503,7 @@ const glob: BuiltinTool = {
       type: "object",
       properties: {
         pattern: { type: "string", description: "文件名模式，支持 * 和 ?" },
-        path: { type: "string", description: "起点目录，默认工作目录根" },
+        path: { type: "string", description: "起点目录，默认工作目录根；完全访问权限下可使用绝对路径" },
       },
       required: ["pattern"],
     },
@@ -389,7 +512,7 @@ const glob: BuiltinTool = {
     const pattern = argStr(args, "pattern");
     if (!pattern) return fail("缺少参数 pattern");
 
-    const sb = resolveInWorkspace(ctx.workspace, argStr(args, "path") ?? ".");
+    const sb = resolveToolPath(ctx, argStr(args, "path") ?? ".");
     if (!sb.ok) return fail(sb.reason);
 
     const re = new RegExp(
@@ -417,7 +540,7 @@ const glob: BuiltinTool = {
         if (found.length >= 200) return;
         const full = path.join(dir, e.name);
         if (e.isDirectory()) {
-          if (skip.has(e.name) || e.name.startsWith(".")) continue;
+          if (skip.has(e.name) || (ctx.safetyMode !== "full-access" && e.name.startsWith("."))) continue;
           await walk(full, depth + 1);
         } else if (re.test(e.name)) {
           found.push(path.relative(ctx.workspace, full));
@@ -439,7 +562,7 @@ const bash: BuiltinTool = {
   definition: {
     name: "bash",
     description:
-      "在工作目录内执行 shell 命令。只读命令（ls/cat/git status 等）自动执行，其余需用户确认，高危命令会被直接拒绝。",
+      "执行 shell 命令。默认在工作目录内运行并按当前权限模式确认；完全访问权限下可操作工作区外路径。",
     parameters: {
       type: "object",
       properties: {
@@ -458,27 +581,40 @@ const bash: BuiltinTool = {
     const cmd = argStr(args, "command");
     if (!cmd) return fail("缺少参数 command");
 
-    const verdict = judgeCommand(cmd);
+    const verdict = judgeCommand(cmd, { allowUnsafe: ctx.safetyMode === "full-access" });
     if (verdict.action === "block") {
       return fail(`已拒绝执行：${verdict.reason}`);
     }
 
     try {
-      const { stdout, stderr } = await execAsync(cmd, {
+      const outputEncoding = process.platform === "win32" ? "buffer" : "utf8";
+      const { stdout, stderr } = (await execAsync(cmd, {
         cwd: ctx.workspace,
         timeout: BASH_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
         windowsHide: true,
         signal: ctx.signal,
-      });
-      const out = [stdout, stderr].filter(Boolean).join("\n").trim();
+        encoding: outputEncoding,
+      })) as { stdout: Buffer | string; stderr: Buffer | string };
+      const out = [decodeCommandOutput(stdout), decodeCommandOutput(stderr)]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
       return ok(out || "（命令执行成功，无输出）");
     } catch (err) {
-      const e = err as { message: string; stdout?: string; stderr?: string; killed?: boolean };
+      const e = err as {
+        message: string;
+        stdout?: Buffer | string;
+        stderr?: Buffer | string;
+        killed?: boolean;
+      };
       if (e.killed) {
         return fail(`命令超时（超过 ${BASH_TIMEOUT_MS / 1000}s）`);
       }
-      const detail = [e.stdout, e.stderr].filter(Boolean).join("\n").trim();
+      const detail = [decodeCommandOutput(e.stdout), decodeCommandOutput(e.stderr)]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
       return fail(`命令失败：${detail || e.message}`);
     }
   },
@@ -512,6 +648,7 @@ const CORE_TOOLS: BuiltinTool[] = [
   readFile,
   writeFile,
   editFile,
+  deleteFile,
   listDir,
   grep,
   {
@@ -519,7 +656,7 @@ const CORE_TOOLS: BuiltinTool[] = [
     definition: {
       ...grep.definition,
       name: "search_files",
-      description: "在工作区内搜索文件内容；这是 grep 的 Hermes 兼容名称。",
+       description: "搜索文件内容；这是 grep 的 Hermes 兼容名称，完全访问权限下可搜索工作区外路径。",
     },
   },
   glob,
@@ -529,7 +666,7 @@ const CORE_TOOLS: BuiltinTool[] = [
     definition: {
       ...bash.definition,
       name: "run_command",
-      description: "在工作区内运行命令；这是 bash 的 Hermes 兼容名称。",
+      description: "运行 shell 命令；这是 bash 的 Hermes 兼容名称，完全访问权限下可操作工作区外路径。",
     },
   },
   getTime,
@@ -539,6 +676,13 @@ function inferToolset(name: string): ToolsetId {
   if (name.startsWith("memory_")) return "memory";
   if (name.startsWith("skill_")) return "skills";
   if (name.startsWith("browser_")) return "browser";
+  if (name === "update_plan" || name === "todo") return "planning";
+  if (name === "vision_analyze") return "vision";
+  if (name === "web_fetch" || name === "web_extract" || name === "web_search") return "web";
+  if (name === "execute_code") return "execution";
+  if (name === "parallel" || name === "delegate_task") return "orchestration";
+  if (name === "tool_search" || name === "mcp_invoke" || name.startsWith("mcp.")) return "mcp";
+  if (name === "computer_use") return "computer";
   return "coding";
 }
 
@@ -557,4 +701,5 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
   ...MEMORY_TOOLS,
   ...SKILL_TOOLS,
   ...BROWSER_TOOLS,
+  ...ADVANCED_TOOLS,
 ].map(withToolset);

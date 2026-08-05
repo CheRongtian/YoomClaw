@@ -88,6 +88,12 @@ test("runtime config restores persisted Hermes settings", () => {
   });
   assert.equal(envSafety.safetyMode, "workspace-auto");
 
+  const fullAccess = loadRuntimeConfig({ YOOMCLAW_SAFETY_MODE: "full-access" }, {
+    workspace: root,
+    dataDir: path.join(root, "full-access-data"),
+  });
+  assert.equal(fullAccess.safetyMode, "full-access");
+
   const localPrompt = loadRuntimeConfig({
     YOOMCLAW_PROMPT_MODE: "local",
     YOOMCLAW_AUTO_MEMORY_REVIEW: "true",

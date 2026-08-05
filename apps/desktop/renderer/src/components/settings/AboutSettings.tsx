@@ -53,6 +53,7 @@ export default function AboutSettings() {
           <div className="path-box">{info.dataDir}</div>
           <button
             className="open-btn"
+            data-testid="about-open-data-dir"
             onClick={() => window.yoomclaw?.openDataDir()}
           >
             <FolderIcon size={14} />

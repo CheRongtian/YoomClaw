@@ -12,6 +12,7 @@ import type {
   ChatMessage,
   ChatCompletionRequest,
   ChatCompletionChunk,
+  ContentPart,
   FileUploadRequest,
   FileUploadResponse,
 } from "@yoomclaw/protocol";
@@ -108,8 +109,9 @@ export class JimoProvider implements LLMProvider {
       Accept: "text/event-stream",
     };
 
+    const messages = request.messages.map(normalizeChatMessageForJimo);
     const body = JSON.stringify({
-      messages: request.messages,
+      messages,
       sessionId: request.sessionId,
       source: request.source ?? "api",
       extra: request.extra ?? {},
@@ -324,6 +326,37 @@ function parseSSEEvent(raw: string): SSEParsedEvent | null {
 
   if (!data) return null;
   return { event, data };
+}
+
+/**
+ * Jimo accepts one textual prompt plus multimodal parts. The Agent adds its
+ * trusted tool/safety context as separate text parts before sending the user
+ * text, and Jimo deployments that receive several adjacent text parts may
+ * inspect only the first one. Fold all text parts into the first text slot so
+ * the actual user task is never dropped when a file or image is attached.
+ */
+function normalizeChatMessageForJimo(message: ChatMessage): ChatMessage {
+  const parts: ContentPart[] | string = message.content;
+  if (typeof parts === "string") return message;
+  const textIndexes = parts
+    .map((part, index) => part.type === "text" ? index : -1)
+    .filter((index) => index >= 0);
+  if (textIndexes.length <= 1) return message;
+  const firstTextIndex = textIndexes[0];
+  const mergedText = textIndexes
+    .map((index) => parts[index])
+    .filter((part): part is Extract<ContentPart, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+  const content: ContentPart[] = [];
+  parts.forEach((part, index) => {
+    if (part.type !== "text") {
+      content.push(part);
+    } else if (index === firstTextIndex) {
+      content.push({ type: "text", text: mergedText });
+    }
+  });
+  return { ...message, content };
 }
 
 // ===== Provider Factory =====

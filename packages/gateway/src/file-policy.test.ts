@@ -213,3 +213,85 @@ test("Gateway exposes the provider upstream size limit instead of a generic uplo
     await gateway.stop();
   }
 });
+
+test("Gateway resolves local image paths under the active safety boundary", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-local-media-"));
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-local-media-outside-"));
+  const insidePath = path.join(root, "inside.png");
+  const outsidePath = path.join(outsideRoot, "outside.png");
+  const oversizedPath = path.join(root, "oversized.png");
+  fs.writeFileSync(insidePath, Buffer.from([0, 1, 2, 3]));
+  fs.writeFileSync(outsidePath, Buffer.from([4, 5, 6, 7]));
+  fs.writeFileSync(oversizedPath, Buffer.alloc(0));
+  fs.truncateSync(oversizedPath, FILE_INPUT_RULES.image.maxBytes + 1);
+  const gateway = new Gateway({
+    host: "127.0.0.1",
+    port: 0,
+    workspace: root,
+    dataDir: path.join(root, "data"),
+    agentConfig: { provider: "jimo", model: "test", mode: "hermes" },
+    jimoConfig: {
+      baseUrl: "https://example.test",
+      shareId: "main-share",
+      authorization: "main-token",
+    },
+  });
+  gateway.start();
+  const server = (gateway as unknown as { httpServer: Server }).httpServer;
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const base = `http://127.0.0.1:${address.port}`;
+
+  try {
+    const inside = await fetch(`${base}/api/files/read-local`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: insidePath }),
+    });
+    assert.equal(inside.status, 200);
+    const insideBody = await inside.json() as {
+      fileName: string;
+      kind: string;
+      mimeType: string;
+      sizeBytes: number;
+      dataUrl: string;
+    };
+    assert.equal(insideBody.fileName, "inside.png");
+    assert.equal(insideBody.kind, "image");
+    assert.equal(insideBody.mimeType, "image/png");
+    assert.equal(insideBody.sizeBytes, 4);
+    assert.match(insideBody.dataUrl, /^data:image\/png;base64,/);
+
+    const oversized = await fetch(base + "/api/files/read-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: oversizedPath }),
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal((await oversized.json() as { code: string }).code, "FILE_TOO_LARGE");
+
+    const outsideBlocked = await fetch(`${base}/api/files/read-local`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: outsidePath }),
+    });
+    assert.equal(outsideBlocked.status, 403);
+    assert.equal((await outsideBlocked.json() as { code: string }).code, "LOCAL_FILE_BLOCKED");
+
+    const config = await fetch(`${base}/api/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ safetyMode: "full-access" }),
+    });
+    assert.equal(config.status, 200);
+    const outsideAllowed = await fetch(`${base}/api/files/read-local`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: outsidePath }),
+    });
+    assert.equal(outsideAllowed.status, 200);
+  } finally {
+    await gateway.stop();
+  }
+});

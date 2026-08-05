@@ -61,6 +61,7 @@ export default function WindowFrame({ children }: Props) {
         <div className="tb-actions">
           <button
             className="win-btn"
+            data-testid="window-minimize"
             onClick={() => claw?.minimize()}
             title="最小化"
             aria-label="最小化"
@@ -69,6 +70,7 @@ export default function WindowFrame({ children }: Props) {
           </button>
           <button
             className="win-btn"
+            data-testid="window-maximize"
             onClick={() => claw?.toggleMaximize()}
             title={maximized ? "向下还原" : "最大化"}
             aria-label={maximized ? "向下还原" : "最大化"}
@@ -77,6 +79,7 @@ export default function WindowFrame({ children }: Props) {
           </button>
           <button
             className="win-btn close"
+            data-testid="window-close"
             onClick={() => claw?.close()}
             title="关闭"
             aria-label="关闭"
@@ -163,6 +166,7 @@ export default function WindowFrame({ children }: Props) {
         }
         .window-body {
           flex: 1;
+          min-height: 0;
           overflow: hidden;
           display: flex;
           flex-direction: column;

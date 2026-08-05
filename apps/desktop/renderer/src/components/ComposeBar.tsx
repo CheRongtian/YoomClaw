@@ -5,12 +5,14 @@ import {
   useCallback,
   KeyboardEvent,
   ChangeEvent,
+  ClipboardEvent,
   DragEvent,
 } from "react";
 import {
   classifyFileInput,
-  FILE_INPUT_ACCEPT,
+  extractLocalFilePathCandidates,
   MAX_FILES_PER_MESSAGE,
+  MAX_IMAGES_PER_MESSAGE,
 } from "@yoomclaw/protocol";
 import { SendIcon, StopIcon, PaperclipIcon, CloseIcon } from "./icons";
 
@@ -19,8 +21,16 @@ export interface ComposePrefill {
   nonce: number;
 }
 
+export interface ComposeAttachment {
+  file: File;
+  /** Native path when this File is backed by a local desktop file. */
+  path?: string;
+  /** True when the file is kept for local file operations without uploading its bytes. */
+  pathOnly?: boolean;
+}
+
 interface Props {
-  onSend: (text: string, files: File[]) => boolean | Promise<boolean>;
+  onSend: (text: string, files: ComposeAttachment[]) => boolean | Promise<boolean>;
   onStop: () => void;
   disabled?: boolean;
   ready?: boolean;
@@ -36,9 +46,70 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function getNativeFilePath(file: File): string | undefined {
+  try {
+    const nativePath = window.yoomclaw?.getPathForFile?.(file);
+    if (typeof nativePath === "string" && nativePath.trim()) return nativePath;
+  } catch {
+    // Browser mode and synthetic test files do not have a native path.
+  }
+  // Keep compatibility with older Electron versions that augmented File with
+  // a non-standard `path` property.
+  const legacyPath = (file as File & { path?: unknown }).path;
+  return typeof legacyPath === "string" && legacyPath.trim() ? legacyPath : undefined;
+}
+
+function clipboardFiles(data: DataTransfer): File[] {
+  const files = Array.from(data.files ?? []);
+  if (files.length > 0) return files;
+  return Array.from(data.items ?? [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+}
+
+function clipboardLocalPaths(data: DataTransfer): string[] {
+  const values: string[] = [];
+  for (const format of ["text/uri-list", "text/plain"]) {
+    try {
+      const value = data.getData(format);
+      if (value) values.push(value);
+    } catch {
+      // Some browser clipboard implementations reject unsupported formats.
+    }
+  }
+  return [...new Set(values.flatMap((value) => extractLocalFilePathCandidates(value)))];
+}
+
+async function nativeClipboardLocalPaths(): Promise<string[]> {
+  try {
+    const paths = await window.yoomclaw?.getClipboardFilePaths?.();
+    return Array.isArray(paths) ? paths.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    // Browser mode and platforms without native file clipboard formats fall
+    // back to the paths exposed by the ClipboardEvent itself.
+    return [];
+  }
+}
+
+function fileNameFromPath(filePath: string): string {
+  const normalized = filePath.replace(/[\\/]+$/u, "");
+  return normalized.split(/[\\/]/u).pop() || normalized || "local-file";
+}
+
+function formatRejection(fileName: string, code: string | undefined, maxBytes?: number): string {
+  if (code === "FILE_TOO_LARGE" && maxBytes !== undefined) {
+    return `${fileName}（文件过大，单个上限 ${formatSize(maxBytes)}）`;
+  }
+  if (code === "TOO_MANY_IMAGES") return `${fileName}（单条消息最多 ${MAX_IMAGES_PER_MESSAGE} 张图片）`;
+  if (code === "TOO_MANY_FILES") return `${fileName}（单条消息最多 ${MAX_FILES_PER_MESSAGE} 个附件）`;
+  if (code === "UNSUPPORTED_FILE_TYPE") return `${fileName}（不支持的文件类型）`;
+  return `${fileName}（${code ?? "文件不可用"}）`;
+}
+
 export default function ComposeBar({ onSend, onStop, disabled, ready = true, creating = false, streaming, prefill, draftKey }: Props) {
   const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachments, setAttachments] = useState<ComposeAttachment[]>([]);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -167,23 +238,46 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
     ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
   };
 
-  const addAttachments = (files: File[]) => {
+  const addAttachments = (files: File[], explicitPaths: string[] = []) => {
     if (!files.length) return;
     setAttachments((prev) => {
       const available = Math.max(0, MAX_FILES_PER_MESSAGE - prev.length);
-      const accepted: File[] = [];
+      const existingImageCount = prev.reduce((count, attachment) => (
+        count + (classifyFileInput(attachment.file.name, attachment.file.size, attachment.file.type).kind === "image" ? 1 : 0)
+      ), 0);
+      const accepted: ComposeAttachment[] = [];
       const rejected: string[] = [];
-      for (const file of files) {
+      let acceptedImageCount = 0;
+      for (const [index, file] of files.entries()) {
+        const explicitPath = explicitPaths[index];
+        const nativePath = getNativeFilePath(file);
+        const localPath = nativePath ?? explicitPath;
         const descriptor = classifyFileInput(file.name, file.size, file.type);
-        if (!descriptor.accepted) {
-          rejected.push(`${file.name} (${descriptor.rejectionCode})`);
+        // A native desktop path is useful even when the provider upload policy
+        // rejects the bytes (for example .txt, .zip or an oversized file).
+        // Keep that attachment as path-only so file-operation requests still
+        // reach the Agent.
+        if (!descriptor.accepted && !localPath) {
+          rejected.push(formatRejection(file.name, descriptor.rejectionCode, descriptor.maxBytes));
+          continue;
+        }
+        if (descriptor.accepted && descriptor.kind === "image" && existingImageCount + acceptedImageCount >= MAX_IMAGES_PER_MESSAGE) {
+          rejected.push(formatRejection(file.name, "TOO_MANY_IMAGES"));
           continue;
         }
         if (accepted.length >= available) {
-          rejected.push(`${file.name} (TOO_MANY_FILES)`);
+          rejected.push(formatRejection(file.name, "TOO_MANY_FILES"));
           continue;
         }
-        accepted.push(file);
+        accepted.push({
+          file,
+          path: localPath,
+          // A pasted Explorer file can have real bytes and an explicit path
+          // even when webUtils cannot resolve the File object. Upload those
+          // bytes as usual; reserve path-only mode for rejected/empty files.
+          pathOnly: Boolean(localPath && (!descriptor.accepted || file.size === 0)),
+        });
+        if (descriptor.accepted && descriptor.kind === "image") acceptedImageCount += 1;
       }
       setAttachmentNotice(
         rejected.length > 0
@@ -197,6 +291,46 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     addAttachments(Array.from(e.target.files ?? []));
     e.target.value = "";
+  };
+
+  const handlePaste = (e: ClipboardEvent<HTMLDivElement>) => {
+    if (disabled || streaming) return;
+    const files = clipboardFiles(e.clipboardData);
+    const eventPaths = clipboardLocalPaths(e.clipboardData);
+    const hasNativeFiles = Array.from(e.clipboardData.types).includes("Files");
+    const attachFiles = (localPaths: string[]) => {
+      const paths = [...new Set([...eventPaths, ...localPaths])];
+      const explicitPaths = files.map((file) => {
+        const fileName = file.name.toLocaleLowerCase();
+        return paths.find((filePath) => fileNameFromPath(filePath).toLocaleLowerCase() === fileName)
+          ?? (files.length === 1 ? paths[0] : "");
+      });
+      addAttachments(files, explicitPaths);
+    };
+    if (files.length > 0) {
+      e.preventDefault();
+      void nativeClipboardLocalPaths().then(attachFiles);
+      return;
+    }
+    if (eventPaths.length > 0) {
+      e.preventDefault();
+      addAttachments(
+        eventPaths.map((filePath) => new File([], fileNameFromPath(filePath), { type: "application/octet-stream" })),
+        eventPaths,
+      );
+      return;
+    }
+    // Explorer may expose only the native file-drop format. Prevent the
+    // browser's default paste and ask the main process for those paths.
+    if (!hasNativeFiles) return;
+    e.preventDefault();
+    void nativeClipboardLocalPaths().then((paths) => {
+      if (paths.length === 0) return;
+      addAttachments(
+        paths.map((filePath) => new File([], fileNameFromPath(filePath), { type: "application/octet-stream" })),
+        paths,
+      );
+    });
   };
 
   const hasFiles = (e: DragEvent<HTMLDivElement>) =>
@@ -249,6 +383,8 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
   return (
     <div
       className={`compose-bar${dragActive ? " is-drag-active" : ""}`}
+      data-testid="compose-bar"
+      onPaste={handlePaste}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -256,15 +392,17 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
     >
       {attachments.length > 0 && (
         <div className="compose-attachments">
-          {attachments.map((f, i) => (
-            <span className="attach-chip" key={`${f.name}-${i}`} style={{ animationDelay: `${Math.min(i, 5) * 24}ms` }}>
-              <span className="attach-name">{f.name}</span>
-              <span className="attach-size">{formatSize(f.size)}</span>
+          {attachments.map((attachment, i) => (
+            <span className="attach-chip" data-testid="attachment-chip" data-attachment-index={i} key={`${attachment.file.name}-${i}`} title={attachment.path ?? attachment.file.name} style={{ animationDelay: `${Math.min(i, 5) * 24}ms` }}>
+              <span className="attach-name">{attachment.file.name}</span>
+              <span className="attach-size">{attachment.pathOnly ? "仅路径" : formatSize(attachment.file.size)}</span>
               <button
                 type="button"
                 className="attach-remove"
+                data-testid="attachment-remove"
+                data-attachment-index={i}
                 onClick={() => removeAttachment(i)}
-                aria-label={`移除 ${f.name}`}
+                aria-label={`移除 ${attachment.file.name}`}
                 title="移除"
               >
                 <CloseIcon size={12} />
@@ -284,6 +422,7 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
         <textarea
           ref={textareaRef}
           className="compose-input"
+          data-testid="compose-input"
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -307,30 +446,33 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
           <button
             type="button"
             className="tool-btn"
+            data-testid="attachment-add"
             onClick={() => fileInputRef.current?.click()}
             title="添加附件"
             aria-label="添加附件"
           >
             <PaperclipIcon size={20} />
           </button>
+          {/* The desktop path is also valid when the provider cannot upload the bytes. */}
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            accept={FILE_INPUT_ACCEPT}
             hidden
             onChange={handleFileChange}
           />
           {streaming ? (
-            <button className="stop-btn" onClick={onStop} title="停止生成">
+            <button className="stop-btn" data-testid="message-stop" onClick={onStop} title="停止生成" aria-label="停止生成">
               <StopIcon size={16} />
             </button>
           ) : (
             <button
               className="send-btn"
+              data-testid="message-send"
               onClick={handleSubmit}
               disabled={!canSend}
               title="发送 (Enter)"
+              aria-label="发送"
             >
               <SendIcon size={16} />
             </button>
@@ -352,11 +494,15 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
 
       <style jsx>{`
         .compose-bar {
-          padding: 10px 24px 8px;
+          position: relative;
+          z-index: 2;
+          padding: 10px var(--chat-content-gutter) 8px;
           flex-shrink: 0;
+          background: var(--bg);
         }
         .compose-inner {
-          max-width: 860px;
+          width: 100%;
+          max-width: var(--chat-content-width);
           margin: 0 auto;
           display: flex;
           flex-direction: column;
@@ -461,7 +607,8 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
           filter: brightness(1.08);
         }
         .compose-attachments {
-          max-width: 860px;
+          width: 100%;
+          max-width: var(--chat-content-width);
           margin: 0 auto 6px;
           display: flex;
           flex-wrap: wrap;
@@ -511,14 +658,16 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
         }
         .attach-remove :global(svg) { display: block; }
         .compose-footer {
-          max-width: 860px;
+          width: 100%;
+          max-width: var(--chat-content-width);
           margin: 6px auto 0;
           font-size: 11px;
           color: var(--text-muted);
           text-align: center;
         }
         .attachment-notice {
-          max-width: 860px;
+          width: 100%;
+          max-width: var(--chat-content-width);
           margin: 4px auto 0;
           color: var(--warning, #d97706);
           font-size: 11px;

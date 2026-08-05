@@ -76,7 +76,8 @@ function sanitize(raw) {
       if (typeof value === "boolean") out[key] = value;
     } else if (typeof fallback === "number") {
       if (typeof value === "number" && Number.isFinite(value)) {
-        out[key] = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+        const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+        out[key] = Math.round(clamped * 100) / 100;
       }
     } else if (typeof fallback === "string") {
       if (typeof value === "string") out[key] = value;

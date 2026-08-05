@@ -114,6 +114,24 @@ test("Gateway exposes Hermes config without provider credentials", async () => {
     const blockedResponse = await fetch(`${base}/api/workspace/file?path=..%2FREADME.test.md`);
     assert.equal(blockedResponse.status, 403);
 
+    const outsideName = `yoomclaw-outside-${path.basename(root)}.txt`;
+    const outsideFile = path.join(path.dirname(root), outsideName);
+    fs.writeFileSync(outsideFile, "full access preview\n");
+    try {
+      const safetyResponse = await fetch(`${base}/api/config`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ safetyMode: "full-access" }),
+      });
+      assert.equal(safetyResponse.ok, true);
+      assert.equal((await safetyResponse.json() as { safetyMode: string }).safetyMode, "full-access");
+      const outsideResponse = await fetch(`${base}/api/workspace/file?path=${encodeURIComponent(`../${outsideName}`)}`);
+      assert.equal(outsideResponse.status, 200);
+      assert.equal((await outsideResponse.json() as { content: string }).content, "full access preview\n");
+    } finally {
+      fs.rmSync(outsideFile, { force: true });
+    }
+
     const gitResponse = await fetch(`${base}/api/workspace/git`);
     assert.equal(gitResponse.status, 200);
     const git = await gitResponse.json() as { available: boolean; branch: string; status: string; diff: string };
@@ -196,6 +214,21 @@ test("Gateway accepts ten attachment parts but rejects the eleventh before Agent
       assert.equal(elevenResponse.type, "error");
       assert.equal(elevenResponse.code, "TOO_MANY_FILES");
       assert.equal(elevenResponse.runId, "eleven-files");
+
+      const elevenImages = Array.from({ length: 11 }, (_, index) => ({
+        type: "image_url",
+        image_url: { url: `https://files.example.test/${index}.png` },
+      }));
+      socket.send(JSON.stringify({
+        type: "chat.start",
+        sessionId: "missing-session",
+        runId: "eleven-images",
+        message: { role: "user", content: elevenImages },
+      }));
+      const elevenImagesResponse = await waitForMessage(socket);
+      assert.equal(elevenImagesResponse.type, "error");
+      assert.equal(elevenImagesResponse.code, "TOO_MANY_IMAGES");
+      assert.equal(elevenImagesResponse.runId, "eleven-images");
     } finally {
       socket.close();
     }

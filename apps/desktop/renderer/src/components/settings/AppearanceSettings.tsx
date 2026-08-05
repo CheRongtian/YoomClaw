@@ -20,6 +20,7 @@ export default function AppearanceSettings() {
           <button
             key={value}
             className={`mode-opt ${mode === value ? "active" : ""}`}
+            data-testid={`appearance-mode-${value}`}
             onClick={() => setMode(value)}
           >
             <Icon size={15} />
@@ -38,6 +39,7 @@ export default function AppearanceSettings() {
             <button
               key={t.id}
               className={`theme-card ${active ? "active" : ""}`}
+              data-testid={`appearance-theme-${t.id}`}
               onClick={() => setThemeId(t.id)}
             >
               <span className="tc-name">{t.name}</span>
@@ -46,7 +48,6 @@ export default function AppearanceSettings() {
                   <CheckIcon size={13} />
                 </span>
               )}
-              {t.source === "opencode" && <span className="tc-tag">oc</span>}
             </button>
           );
         })}
@@ -141,14 +142,6 @@ export default function AppearanceSettings() {
         .tc-check {
           color: var(--primary);
           display: flex;
-        }
-        .tc-tag {
-          font-size: 9px;
-          color: var(--text-muted);
-          background: var(--bg-element);
-          padding: 0 4px;
-          border-radius: 4px;
-          flex-shrink: 0;
         }
       `}</style>
     </>

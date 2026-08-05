@@ -7,6 +7,12 @@ const TOOLSETS = [
   ["skills", "Skills"],
   ["browser", "浏览器"],
   ["vision", "识图"],
+  ["planning", "计划"],
+  ["web", "网页与搜索"],
+  ["execution", "代码执行"],
+  ["orchestration", "批量与子 Agent"],
+  ["mcp", "MCP（可选）"],
+  ["computer", "Computer Use（可选）"],
 ] as const;
 
 type PromptTarget = "global" | "project" | "user";
@@ -17,11 +23,13 @@ interface HermesConfig {
   autoMemoryReview: boolean;
   workspace: string;
   toolsets: string[];
-  safetyMode: "workspace-auto" | "confirm";
+  safetyMode: "confirm" | "workspace-auto" | "full-access";
   browserCdpUrl?: string;
   browser?: { connected: boolean; cdpUrl?: string; pageUrl?: string; message?: string };
   visionConfigured: boolean;
   imageHostConfigured: boolean;
+  searchConfigured?: boolean;
+  mcpConfigured?: boolean;
   prompts: Record<PromptTarget, string>;
 }
 
@@ -35,15 +43,19 @@ interface SkillSummary {
 
 const EMPTY_CONFIG: HermesConfig = {
   mode: "hermes",
-  promptMode: "local",
+  // The Provider's static topic is the assistant role; local prompt files are
+  // retained only as an explicit fallback mode.
+  promptMode: "provider",
   autoMemoryReview: false,
   workspace: "",
-  toolsets: ["coding", "memory", "skills", "browser", "vision"],
+  toolsets: ["coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration"],
   safetyMode: "workspace-auto",
   browserCdpUrl: "http://127.0.0.1:9222",
   browser: { connected: false },
   visionConfigured: false,
   imageHostConfigured: false,
+  searchConfigured: false,
+  mcpConfigured: false,
   prompts: { global: "", project: "", user: "" },
 };
 
@@ -82,6 +94,16 @@ export default function AgentSettings() {
       ]);
       if (configRes.ok) {
         const next = { ...EMPTY_CONFIG, ...(await configRes.json()) } as HermesConfig;
+        // Provider's external Topic is the configured source of static rules.
+        // Migrate old local-mode data as soon as the settings page is opened.
+        if (next.promptMode === "local") {
+          next.promptMode = "provider";
+          void fetch(`${GATEWAY_URL}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ promptMode: "provider" }),
+          }).catch(() => {});
+        }
         if (!aliveRef.current || requestId !== loadRequestRef.current) return;
         setConfig(next);
         setPrompts(next.prompts ?? EMPTY_CONFIG.prompts);
@@ -151,7 +173,9 @@ export default function AgentSettings() {
         setStatus("保存提示词失败");
         return;
       }
-      setStatus("提示词已保存，新会话会使用最新内容");
+      setStatus(config.promptMode === "provider"
+        ? "提示词已保存；当前对话使用 AI 服务“主题”中的静态规则"
+        : "提示词已保存，新会话会使用最新内容");
     } catch (error) {
       if (aliveRef.current && actionId === actionRevisionRef.current) {
         setStatus(error instanceof Error ? error.message : "保存提示词失败");
@@ -262,39 +286,37 @@ export default function AgentSettings() {
       <div className="agent-section-title">工作区与安全</div>
       <div className="workspace-card">
         <div className="workspace-path" title={config.workspace}>{config.workspace || "未选择工作区"}</div>
-        <button className="small-button" onClick={() => void chooseWorkspace()}>选择文件夹</button>
+        <button className="small-button" data-testid="agent-workspace-choose" onClick={() => void chooseWorkspace()}>选择文件夹</button>
       </div>
       <div className="agent-row">
         <div><div className="agent-label">Agent 模式</div><div className="agent-hint">Hermes Mode 使用本地持久化、记忆、Skills 和工具运行时；Legacy 保留旧 ReAct 行为。</div></div>
-        <select value={config.mode} onChange={(event) => void patchConfig({ mode: event.target.value })}>
+        <select data-testid="agent-mode" value={config.mode} onChange={(event) => void patchConfig({ mode: event.target.value })}>
           <option value="hermes">Hermes Mode</option>
           <option value="legacy">Legacy</option>
         </select>
       </div>
       <div className="agent-row">
-        <div><div className="agent-label">工作区内自动执行</div><div className="agent-hint">读写、搜索、测试和构建默认执行；删除、Git 提交和敏感浏览器操作仍需确认。</div></div>
-        <select value={config.safetyMode} onChange={(event) => void patchConfig({ safetyMode: event.target.value })}>
-          <option value="workspace-auto">工作区自动</option>
-          <option value="confirm">全部确认</option>
+        <div><div className="agent-label">访问权限</div><div className="agent-hint">请求批准、对风险操作自动审批，或打开完全访问；完全访问会取消应用层的文件与命令拦截。</div></div>
+        <select data-testid="agent-safety-mode" value={config.safetyMode} onChange={(event) => void patchConfig({ safetyMode: event.target.value })}>
+          <option value="confirm">请求批准</option>
+          <option value="workspace-auto">替我审批</option>
+          <option value="full-access">完全访问权限</option>
         </select>
       </div>
 
       <div className="agent-row">
         <div>
           <div className="agent-label">行为提示来源</div>
-          <div className="agent-hint">本地模式会把工作区规则、记忆和工具说明组合进首轮任务；Provider 模式只发送用户任务。</div>
+          <div className="agent-hint">Provider 模式固定使用 AI 服务的“主题”作为静态规则；当前任务、附件、文件路径和运行时权限仍由本地动态传入。</div>
         </div>
-        <select value={config.promptMode} onChange={(event) => void patchConfig({ promptMode: event.target.value })}>
-          <option value="local">本地工作区</option>
-          <option value="provider">Provider</option>
-        </select>
+        <div className="prompt-mode-fixed" data-testid="agent-prompt-mode">Provider</div>
       </div>
       <div className="agent-row">
         <div>
           <div className="agent-label">完成后自动整理记忆</div>
           <div className="agent-hint">成功任务结束后提取稳定的项目事实和用户偏好；敏感信息仍会被过滤。</div>
         </div>
-        <button className={`toolset ${config.autoMemoryReview ? "selected" : ""}`} onClick={() => void patchConfig({ autoMemoryReview: !config.autoMemoryReview })}>
+        <button className={`toolset ${config.autoMemoryReview ? "selected" : ""}`} data-testid="agent-auto-memory" onClick={() => void patchConfig({ autoMemoryReview: !config.autoMemoryReview })}>
           {config.autoMemoryReview ? "已开启" : "已关闭"}
         </button>
       </div>
@@ -303,25 +325,28 @@ export default function AgentSettings() {
       <div className="toolset-grid">
         {TOOLSETS.map(([id, label]) => {
           const enabled = config.toolsets.includes(id);
-          return <button key={id} className={`toolset ${enabled ? "selected" : ""}`} onClick={() => void patchConfig({ toolsets: enabled ? config.toolsets.filter((item) => item !== id) : [...config.toolsets, id] })}>{label}</button>;
+          return <button key={id} className={`toolset ${enabled ? "selected" : ""}`} data-testid={`agent-toolset-${id}`} onClick={() => void patchConfig({ toolsets: enabled ? config.toolsets.filter((item) => item !== id) : [...config.toolsets, id] })}>{label}</button>;
         })}
       </div>
 
-      <div className="agent-section-title">提示词</div>
-      <div className="prompt-tabs">
-        {(["global", "project", "user"] as PromptTarget[]).map((target) => <button key={target} className={promptTarget === target ? "active" : ""} onClick={() => setPromptTarget(target)}>{target === "global" ? "全局 SOUL.md" : target === "project" ? "项目 AGENTS.md" : "用户偏好"}</button>)}
+      <div className="agent-section-title">本地兼容提示词</div>
+      <div className="prompt-mode-note" data-testid="agent-prompt-mode-note">
+        当前使用 Provider 模式：请在 AI 服务的“主题”中保存静态规则。本页面内容仅作为本地兼容数据保留，不会作为静态提示词随聊天发送。
       </div>
-      <textarea className="prompt-editor" value={prompts[promptTarget] ?? ""} onChange={(event) => setPrompts((current) => ({ ...current, [promptTarget]: event.target.value }))} spellCheck={false} />
-      <button className="primary-button" onClick={() => void savePrompt()}>保存提示词</button>
+      <div className="prompt-tabs">
+        {(["global", "project", "user"] as PromptTarget[]).map((target) => <button key={target} data-testid={`agent-prompt-tab-${target}`} className={promptTarget === target ? "active" : ""} onClick={() => setPromptTarget(target)}>{target === "global" ? "全局 SOUL.md" : target === "project" ? "项目 AGENTS.md" : "用户偏好"}</button>)}
+      </div>
+      <textarea className="prompt-editor" data-testid="agent-prompt-editor" value={prompts[promptTarget] ?? ""} onChange={(event) => setPrompts((current) => ({ ...current, [promptTarget]: event.target.value }))} spellCheck={false} />
+      <button className="primary-button" data-testid="agent-prompt-save" onClick={() => void savePrompt()}>保存提示词</button>
 
       <div className="agent-section-title">记忆</div>
-      <textarea className="memory-editor" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="项目和环境中的长期事实" spellCheck={false} />
-      <button className="small-button" onClick={() => void saveMemory("memory")}>保存项目记忆</button>
-      <textarea className="memory-editor" value={userMemory} onChange={(event) => setUserMemory(event.target.value)} placeholder="用户习惯和偏好" spellCheck={false} />
-      <button className="small-button" onClick={() => void saveMemory("user")}>保存用户记忆</button>
+      <textarea className="memory-editor" data-testid="agent-memory-editor" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="项目和环境中的长期事实" spellCheck={false} />
+      <button className="small-button" data-testid="agent-memory-save" onClick={() => void saveMemory("memory")}>保存项目记忆</button>
+      <textarea className="memory-editor" data-testid="agent-user-memory-editor" value={userMemory} onChange={(event) => setUserMemory(event.target.value)} placeholder="用户习惯和偏好" spellCheck={false} />
+      <button className="small-button" data-testid="agent-user-memory-save" onClick={() => void saveMemory("user")}>保存用户记忆</button>
 
       <div className="agent-section-title">Skills</div>
-      {skills.length === 0 ? <div className="agent-hint">暂无 Skill。Agent 成功完成可复用流程后可以生成草稿。</div> : skills.map((skill) => <div className="skill-row" key={skill.id}><div><div className="agent-label">{skill.name} {skill.status === "draft" && <span className="draft-label">草稿</span>}</div><div className="agent-hint">{skill.description || "无描述"}</div></div>{skill.status === "draft" && <span className="skill-actions"><button className="small-button" onClick={() => void applySkill(skill.id, "apply")}>启用</button><button className="small-button danger" onClick={() => void applySkill(skill.id, "reject")}>拒绝</button></span>}</div>)}
+      {skills.length === 0 ? <div className="agent-hint">暂无 Skill。Agent 成功完成可复用流程后可以生成草稿。</div> : skills.map((skill) => <div className="skill-row" key={skill.id}><div><div className="agent-label">{skill.name} {skill.status === "draft" && <span className="draft-label">草稿</span>}</div><div className="agent-hint">{skill.description || "无描述"}</div></div>{skill.status === "draft" && <span className="skill-actions"><button className="small-button" data-testid={`skill-apply-${skill.id}`} onClick={() => void applySkill(skill.id, "apply")}>启用</button><button className="small-button danger" data-testid={`skill-reject-${skill.id}`} onClick={() => void applySkill(skill.id, "reject")}>拒绝</button></span>}</div>)}
 
       <div className="agent-section-title">浏览器与识图</div>
       <div className="browser-card">
@@ -330,7 +355,7 @@ export default function AgentSettings() {
       </div>
       <div className="browser-card">
         <div><div className="agent-label">Chrome CDP</div><div className="agent-hint">{config.browser?.connected ? `已连接：${config.browser.pageUrl || "当前页面"}` : "未连接。请用 --remote-debugging-port=9222 启动 Chrome。"}</div></div>
-        <div className="browser-actions"><input value={config.browserCdpUrl ?? ""} onChange={(event) => setConfig((current) => ({ ...current, browserCdpUrl: event.target.value }))} onBlur={() => void patchConfig({ browserCdpUrl: config.browserCdpUrl })} /><button className="small-button" onClick={() => void (config.browser?.connected ? disconnectBrowser() : connectBrowser())}>{config.browser?.connected ? "断开" : "连接"}</button></div>
+        <div className="browser-actions"><input data-testid="browser-cdp-url" value={config.browserCdpUrl ?? ""} onChange={(event) => setConfig((current) => ({ ...current, browserCdpUrl: event.target.value }))} onBlur={() => void patchConfig({ browserCdpUrl: config.browserCdpUrl })} /><button className="small-button" data-testid="browser-connect" onClick={() => void (config.browser?.connected ? disconnectBrowser() : connectBrowser())}>{config.browser?.connected ? "断开" : "连接"}</button></div>
       </div>
       <div className="browser-card"><div className="agent-label">识图机器人</div><span className={`status-pill ${config.visionConfigured ? "ok" : "warn"}`}>{config.visionConfigured ? "已配置" : "未配置 Jimo Vision"}</span></div>
 
@@ -352,7 +377,9 @@ export default function AgentSettings() {
         .agent-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--border-subtle); }
         .agent-label { color: var(--text); font-size: 13px; }
         select, .browser-actions input { color: var(--text); background: var(--bg-input); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font-size: 12px; }
+        .prompt-mode-fixed { color: var(--text); background: color-mix(in srgb, var(--primary) 12%, transparent); border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent); border-radius: 7px; padding: 6px 8px; font-size: 12px; white-space: nowrap; }
         .toolset-grid, .prompt-tabs, .browser-actions, .skill-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+        .prompt-mode-note { margin: -2px 0 8px; padding: 9px 10px; color: var(--text-secondary); background: color-mix(in srgb, var(--primary) 8%, transparent); border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent); border-radius: 8px; font-size: 11px; line-height: 1.55; }
         .toolset, .prompt-tabs button { border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; color: var(--text-secondary); font-size: 12px; }
         .toolset.selected, .prompt-tabs button.active { color: var(--text); border-color: var(--primary); background: color-mix(in srgb, var(--primary) 14%, transparent); }
         .prompt-editor, .memory-editor { display: block; width: 100%; min-height: 110px; resize: vertical; padding: 10px; color: var(--text); background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; font: 12px/1.55 var(--font-mono); outline: none; }

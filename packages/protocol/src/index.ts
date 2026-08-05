@@ -41,6 +41,11 @@ export type ContentPart =
 export interface ChatMessage {
   role: MessageRole;
   content: string | ContentPart[];
+  /**
+   * Native local paths associated with the visible file attachments.
+   * Persisted so edit/retry/session recovery can reconstruct the Agent input.
+   */
+  localPaths?: string[];
   /** Internal-only context for the Agent; never persisted or rendered by the UI. */
   agentContext?: string | ContentPart[];
   /** Optional name for tool messages. */
@@ -142,6 +147,17 @@ export interface FileUploadResponse {
   deleted: boolean;
 }
 
+/** A local file resolved by the desktop media preprocessor. */
+export interface LocalFileReadResponse {
+  ok: true;
+  fileName: string;
+  extension: string;
+  mimeType: string;
+  kind: FileInputKind;
+  sizeBytes: number;
+  dataUrl: string;
+}
+
 export interface PdfReadResponse {
   ok: true;
   fileName: string;
@@ -166,7 +182,13 @@ export type ToolsetId =
   | "memory"
   | "skills"
   | "browser"
-  | "vision";
+  | "vision"
+  | "planning"
+  | "web"
+  | "execution"
+  | "orchestration"
+  | "mcp"
+  | "computer";
 
 export interface JSONSchema {
   type?: string;
@@ -187,10 +209,29 @@ export interface ToolResult {
   toolCallId: string;
   result: string;
   isError?: boolean;
+  /** Optional machine-readable error code for UI and integrations. */
+  code?: string;
+  /** Optional structured metadata; never required by legacy clients. */
+  metadata?: Record<string, unknown>;
 }
 
 /** 工具的风险等级，决定是否需要用户确认。 */
 export type ToolRisk = "safe" | "confirm";
+
+export type PlanItemStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+export interface PlanItem {
+  id: string;
+  title: string;
+  status: PlanItemStatus;
+  detail?: string;
+}
+
+export interface PlanState {
+  items: PlanItem[];
+  note?: string;
+  updatedAt: number;
+}
 
 // ===== Agent 事件流 =====
 
@@ -217,6 +258,8 @@ export type AgentEvent =
       result: string;
       isError: boolean;
       durationMs: number;
+      code?: string;
+      metadata?: Record<string, unknown>;
     }
   /** 危险工具等待用户确认 */
   | {
@@ -250,6 +293,14 @@ export type AgentEvent =
       status: "started" | "completed" | "error";
       message?: string;
     }
+  | { type: "plan"; plan: PlanState }
+  | {
+      type: "subagent";
+      status: "started" | "updated" | "completed" | "error";
+      taskId: string;
+      message?: string;
+      childSessionId?: string;
+    }
   | { type: "final"; text: string }
   /** 出错 */
   | { type: "error"; message: string };
@@ -262,13 +313,18 @@ export interface ToolDecision {
 
 // ===== Gateway Protocol (WebSocket) =====
 
+/** Runtime permission policy selected by the user. */
+export type SafetyMode = "confirm" | "workspace-auto" | "full-access";
+
 export type GatewayMessage =
-  | { type: "chat"; sessionId: string; message: ChatMessage }
+  | { type: "chat"; sessionId: string; message: ChatMessage; safetyMode?: SafetyMode }
   | {
       type: "chat.start";
       sessionId: string;
       runId: string;
       message: ChatMessage;
+      /** Permission mode captured by the desktop client for this run. */
+      safetyMode?: SafetyMode;
     }
   | { type: "chat.cancel"; sessionId: string; runId: string }
   | { type: "chat.stream"; sessionId: string; chunk: ChatCompletionChunk }
@@ -285,7 +341,8 @@ export type GatewayMessage =
       status?: SessionRunStatus;
     }
   | { type: "tool.decision"; sessionId: string; decision: ToolDecision }
-  | { type: "setConfirmMode"; mode: "confirm" | "no-confirm" }
+  /** `no-confirm` is retained for older desktop clients and maps to workspace-auto. */
+  | { type: "setConfirmMode"; mode: SafetyMode | "no-confirm" }
   | { type: "session.list" }
   | { type: "session.list.result"; sessions: SessionSummary[] }
   | { type: "session.create"; title?: string }
@@ -329,7 +386,7 @@ export interface AgentConfig {
   /** Run the separate provider-backed memory review after successful tasks. */
   autoMemoryReview?: boolean;
   /** Workspace execution policy. */
-  safetyMode?: "workspace-auto" | "confirm";
+  safetyMode?: SafetyMode;
   /** Maximum ReAct tool rounds. */
   maxToolRounds?: number;
   /** Repeated identical calls before stopping. */
@@ -345,7 +402,7 @@ export interface RuntimeConfig {
   workspace: string;
   dataDir: string;
   toolsets: ToolsetId[];
-  safetyMode: "workspace-auto" | "confirm";
+  safetyMode: SafetyMode;
   browserCdpUrl?: string;
   visionEnabled: boolean;
 }

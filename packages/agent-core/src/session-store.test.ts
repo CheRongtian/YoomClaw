@@ -18,3 +18,18 @@ test("SessionStore supports flags, search and message branching", () => {
   assert.equal(branched.messages.length, 0);
   assert.deepEqual(branched.runs, []);
 });
+
+test("SessionStore names a new conversation from its first user input", () => {
+  const store = new SessionStore();
+  const session = store.create();
+
+  store.appendMessage(session.id, {
+    role: "user",
+    content: "  读取这个文件\n并总结重点  ",
+  });
+
+  assert.equal(store.get(session.id)?.title, "读取这个文件 并总结重点");
+
+  store.appendMessage(session.id, { role: "user", content: "后续问题" });
+  assert.equal(store.get(session.id)?.title, "读取这个文件 并总结重点");
+});

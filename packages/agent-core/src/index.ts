@@ -21,7 +21,9 @@ import type {
   SessionRun,
   AgentConfig,
   AgentEvent,
+  SafetyMode,
   ToolRisk,
+  ToolsetId,
 } from "@yoomclaw/protocol";
 
 import type { LLMProvider } from "@yoomclaw/llm-provider";
@@ -31,14 +33,17 @@ import {
   type BuiltinTool,
   type ToolContext,
   type BrowserToolController,
+  type ToolOutcome,
 } from "./tools.js";
+import type { ToolServices } from "./services.js";
 import {
   parseToolCall,
   callFingerprint,
   buildToolPrompt,
+  buildSafetyPrompt,
   type ParsedToolCall,
 } from "./react.js";
-import { truncateResult } from "./sandbox.js";
+import { MAX_TOOL_RESULT_CHARS, truncateResult } from "./sandbox.js";
 import path from "node:path";
 import { RunLogger, truncate, formatArgs } from "./logger.js";
 import { FileSessionRepository, type SessionRepository } from "./session-repository.js";
@@ -51,6 +56,36 @@ import {
 import { HermesPromptAssembler, type PromptAssembler, textFromMessage } from "./prompt.js";
 
 // ===== Session Store =====
+
+const DEFAULT_SESSION_TITLE = "\u65b0\u5bf9\u8bdd";
+const SESSION_TITLE_MAX_LENGTH = 80;
+
+function isGeneratedSessionTitle(title: string): boolean {
+  return title === DEFAULT_SESSION_TITLE
+    || /^Session \d+$/.test(title)
+    // Titles produced by older desktop clients included a timestamp.
+    || /^\u65b0\u7684\u5bf9\u8bdd(?:\s.*)?$/.test(title);
+}
+
+function titleFromFirstUserMessage(message: ChatMessage): string | undefined {
+  if (message.role !== "user") return undefined;
+  const text = typeof message.content === "string"
+    ? message.content
+    : message.content
+      .filter((part) => part.type === "text")
+      .map((part) => part.type === "text" ? part.text : "")
+      .join(" ");
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized) {
+    return normalized.length > SESSION_TITLE_MAX_LENGTH
+      ? `${normalized.slice(0, SESSION_TITLE_MAX_LENGTH - 1).trimEnd()}…`
+      : normalized;
+  }
+  if (Array.isArray(message.content) && message.content.some((part) => part.type !== "text")) {
+    return "\u9644\u4ef6";
+  }
+  return undefined;
+}
 
 export class SessionStore {
   private sessions = new Map<string, Session>();
@@ -77,9 +112,10 @@ export class SessionStore {
   create(title?: string): Session {
     const id = generateId();
     const now = Date.now();
+    const requestedTitle = typeof title === "string" ? title.trim() : "";
     const session: Session = {
       id,
-      title: title ?? `Session ${this.sessions.size + 1}`,
+      title: requestedTitle || DEFAULT_SESSION_TITLE,
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -130,6 +166,14 @@ export class SessionStore {
   appendMessage(sessionId: string, message: ChatMessage): Session {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
+    if (
+      isGeneratedSessionTitle(session.title)
+      && message.role === "user"
+      && !session.messages.some((item) => item.role === "user")
+    ) {
+      const title = titleFromFirstUserMessage(message);
+      if (title) session.title = title;
+    }
     session.messages.push(message);
     session.updatedAt = Date.now();
     this.persist(session);
@@ -291,6 +335,10 @@ export interface RunOptions {
    * 交互式 UI 必须传入，否则用户无法拦截写操作。
    */
   confirm?: ConfirmFn;
+  /** Permission policy for this run; defaults to the agent runtime setting. */
+  safetyMode?: SafetyMode;
+  /** Optional per-run toolset restriction; it can only narrow the Agent config. */
+  toolsets?: ToolsetId[];
   /** Stable id used by Gateway cancellation and persisted run events. */
   runId?: string;
 }
@@ -310,6 +358,7 @@ export interface AgentRuntime {
   skillStore?: SkillStore;
   browser?: BrowserToolController;
   vision?: VisionAnalyzer;
+  services?: ToolServices;
   promptAssembler?: PromptAssembler;
 }
 
@@ -405,20 +454,26 @@ export class Agent implements AgentEngine {
   ): AsyncIterable<AgentEvent> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
+    const safetyMode: SafetyMode = options?.safetyMode ?? this.config.safetyMode ?? "workspace-auto";
 
     const inputMessage: ChatMessage =
       typeof input === "string"
         ? { role: "user", content: input }
         : input;
+    const localPaths = normalizeLocalPaths(inputMessage.localPaths);
     // Keep the visible message separate from the richer context sent upstream.
     // PDF extraction and other internal context must not leak into session history/UI.
     let userMessage: ChatMessage = {
       role: inputMessage.role ?? "user",
       content: inputMessage.content,
+      ...(localPaths.length > 0 ? { localPaths } : {}),
     };
     let providerMessage: ChatMessage = {
       role: inputMessage.role ?? "user",
-      content: inputMessage.agentContext ?? inputMessage.content,
+      content: appendLocalPathContext(
+        inputMessage.agentContext ?? inputMessage.content,
+        localPaths,
+      ),
     };
 
     if (this.runtime.vision && hasImagePart(providerMessage)) {
@@ -473,10 +528,11 @@ export class Agent implements AgentEngine {
       };
     }
 
-    const activeTools = this.tools.filter((tool) => this.isToolEnabled(tool));
+    const activeTools = this.tools.filter((tool) => this.isToolEnabled(tool, options?.toolsets));
     const defs = activeTools.map((t) => t.definition);
     const knownToolNames = new Set(defs.map((d) => d.name));
     const toolByName = new Map(activeTools.map((t) => [t.definition.name, t]));
+    const allowDynamicTool = (name: string) => name.startsWith("mcp.") && Boolean(this.runtime.services?.mcp);
     const promptStore = this.runtime.promptStore!;
     const needsBootstrap =
       this.config.mode !== "legacy" &&
@@ -494,8 +550,24 @@ export class Agent implements AgentEngine {
           enabledTools: defs,
           skillIndex: this.runtime.skillStore?.list(false) ?? [],
           userMessage: providerMessage,
+          safetyMode,
         })
       : "";
+    // Provider-backed sessions do not receive the local bootstrap prompt. Inject
+    // the trusted runtime permission context into the task so the fixed backend
+    // prompt can resolve {{safetyMode}} on every client run.
+    if (!needsBootstrap) {
+      providerMessage = withSafetyContext(providerMessage, safetyMode);
+      if (this.config.promptMode === "provider" && this.config.mode !== "legacy") {
+        const runtimeToolsPrompt = buildToolPrompt(defs);
+        providerMessage = typeof providerMessage.content === "string"
+          ? { ...providerMessage, content: `${runtimeToolsPrompt}\n${providerMessage.content}` }
+          : {
+              ...providerMessage,
+              content: [{ type: "text", text: runtimeToolsPrompt }, ...providerMessage.content],
+            };
+      }
+    }
     const legacyPrompt = this.config.mode === "legacy"
       ? `${buildToolPrompt(defs)}\n${textFromMessage(providerMessage)}`
       : "";
@@ -559,7 +631,9 @@ export class Agent implements AgentEngine {
               messages: [roundMessage],
               sessionId: session.providerSessionId ?? sessionId,
               source: "api",
-              extra: {},
+              // Keep the machine-readable mode available to providers that
+              // resolve runtime prompt placeholders from request metadata.
+              extra: { safetyMode },
             },
             { signal: options?.signal },
           )) {
@@ -598,7 +672,7 @@ export class Agent implements AgentEngine {
           break;
         }
 
-        const unknownTool = findUnknownToolName(modelText, knownToolNames);
+        const unknownTool = findUnknownToolName(modelText, knownToolNames, allowDynamicTool);
         if (unknownTool) {
           const visibleSummary = textFromMessage(userMessage).trim();
           finalText = visibleSummary
@@ -608,7 +682,7 @@ export class Agent implements AgentEngine {
           break;
         }
 
-        const call = parseToolCall(modelText, knownToolNames);
+        const call = parseToolCall(modelText, knownToolNames, allowDynamicTool);
         if (!call) {
           finalText = modelText;
           yield { type: "final", text: finalText };
@@ -631,12 +705,43 @@ export class Agent implements AgentEngine {
           break;
         }
 
-        const builtin = toolByName.get(call.tool)!;
+        let builtin = toolByName.get(call.tool);
+        if (!builtin && allowDynamicTool(call.tool)) {
+          builtin = {
+            risk: "confirm",
+            definition: {
+              name: call.tool,
+              description: "由已配置 MCP Server 提供的动态工具。",
+              parameters: { type: "object" },
+              toolset: "mcp",
+            },
+            assess: () => `将调用动态 MCP 工具 ${call.tool}`,
+            async run(args, ctx) {
+              const service = ctx.services?.mcp;
+              if (!service) return { result: "MCP 服务不可用", isError: true, code: "MCP_UNAVAILABLE" };
+              const result = await service.invoke(call.tool, args, {
+                sessionId: ctx.sessionId,
+                workspace: ctx.workspace,
+                dataDir: ctx.dataDir,
+                safetyMode: ctx.safetyMode,
+                signal: ctx.signal,
+              });
+              return { result: result.result, isError: Boolean(result.isError) };
+            },
+          };
+          toolByName.set(call.tool, builtin);
+          knownToolNames.add(call.tool);
+        }
+        if (!builtin) {
+          finalText = `The provider requested an unavailable tool ("${call.tool}"); it was not executed.`;
+          yield { type: "final", text: finalText };
+          break;
+        }
         const callId = generateId();
 
         // 运行时确认判定：静态 risk + 工具的 assess 钩子
         const assessReason = builtin.assess ? builtin.assess(call.args) : null;
-        const needConfirm = this.requiresConfirmation(builtin, call.args, assessReason);
+        const needConfirm = this.requiresConfirmation(builtin, call.args, assessReason, safetyMode);
         const reason = assessReason ?? "该工具会修改你的系统，需要确认";
 
         let approved = true;
@@ -669,10 +774,18 @@ export class Agent implements AgentEngine {
         }
 
         this.logger.info("tool", `${call.tool} approved=${approved}${needConfirm ? " (需确认)" : ""}`);
+        if (call.tool === "delegate_task" && approved) {
+          yield {
+            type: "subagent",
+            status: "started",
+            taskId: callId,
+            message: typeof call.args.task === "string" ? call.args.task.slice(0, 500) : undefined,
+          };
+        }
         yield { type: "tool_start", callId, name: call.tool, args: call.args };
 
         const startedAt = Date.now();
-        let outcome: { result: string; isError: boolean };
+        let outcome: ToolOutcome;
         if (!approved) {
           outcome = { result: "用户拒绝了该工具的执行", isError: true };
         } else {
@@ -684,6 +797,9 @@ export class Agent implements AgentEngine {
             memory: this.runtime.memoryStore,
             skills: this.runtime.skillStore,
             browser: this.runtime.browser,
+            safetyMode,
+            services: this.runtime.services,
+            toolRegistry: activeTools,
           };
           try {
             outcome = await builtin.run(call.args, ctx);
@@ -695,7 +811,11 @@ export class Agent implements AgentEngine {
           }
         }
         const durationMs = Date.now() - startedAt;
-        const resultText = truncateResult(outcome.result);
+        const requestedResultLimit = Number(outcome.resultLimit);
+        const resultLimit = Number.isFinite(requestedResultLimit)
+          ? Math.min(200_000, Math.max(MAX_TOOL_RESULT_CHARS, requestedResultLimit))
+          : MAX_TOOL_RESULT_CHARS;
+        const resultText = truncateResult(outcome.result, resultLimit);
 
         this.logger.info(
           "tool",
@@ -709,10 +829,14 @@ export class Agent implements AgentEngine {
           result: resultText,
           isError: outcome.isError,
           durationMs,
+          ...(outcome.code ? { code: outcome.code } : {}),
+          ...(outcome.metadata ? { metadata: outcome.metadata } : {}),
         };
 
-        const lifecycleEvent = toolLifecycleEvent(call.tool, call.args, resultText, outcome.isError);
+        const lifecycleEvent = toolLifecycleEvent(call.tool, call.args, resultText, outcome.isError, outcome.metadata);
         if (lifecycleEvent) yield lifecycleEvent;
+        const subagentEvent = subagentLifecycleEvent(call.tool, callId, resultText, outcome.isError);
+        if (subagentEvent) yield subagentEvent;
 
         // 把结果回填，进入下一轮
         pendingCall = call;
@@ -734,11 +858,13 @@ export class Agent implements AgentEngine {
     }
   }
 
-  private isToolEnabled(tool: BuiltinTool): boolean {
+  private isToolEnabled(tool: BuiltinTool, runToolsets?: ToolsetId[]): boolean {
     const name = tool.definition.name;
     if (this.config.enabledTools && !this.config.enabledTools.includes(name)) return false;
     const toolset = tool.definition.toolset ?? "coding";
-    const enabledToolsets = this.config.toolsets ?? ["coding", "memory", "skills", "browser", "vision"];
+    const enabledToolsets = runToolsets ?? this.config.toolsets ?? [
+      "coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration",
+    ];
     return enabledToolsets.includes(toolset);
   }
 
@@ -746,11 +872,27 @@ export class Agent implements AgentEngine {
     tool: BuiltinTool,
     args: Record<string, unknown>,
     assessReason: string | null,
+    safetyMode: SafetyMode = this.config.safetyMode ?? "workspace-auto",
   ): boolean {
-    if (this.config.safetyMode === "confirm") return true;
+    if (safetyMode === "full-access") return false;
+    if (safetyMode === "confirm") return true;
     const name = tool.definition.name;
     if (name === "write_file" || name === "edit_file") {
       return !isWorkspacePath(this.workspace, args.path);
+    }
+    if (name === "apply_patch") {
+      // The patch tool validates every path before writing; workspace-auto can
+      // apply an in-workspace patch without an extra prompt.
+      return false;
+    }
+    if (name === "parallel") {
+      const calls = Array.isArray(args.calls) ? args.calls : [];
+      return calls.some((item) => {
+        if (!item || typeof item !== "object") return true;
+        const nameValue = (item as { tool?: unknown }).tool;
+        const nested = this.tools.find((candidate) => candidate.definition.name === nameValue);
+        return !nested || nested.risk === "confirm";
+      });
     }
     if (name === "memory_save" || name === "memory_replace" || name === "skill_draft") {
       return false;
@@ -807,11 +949,15 @@ export class Agent implements AgentEngine {
   }
 }
 
-function findUnknownToolName(text: string, knownTools: Set<string>): string | null {
+function findUnknownToolName(
+  text: string,
+  knownTools: Set<string>,
+  allowDynamicTool?: (name: string) => boolean,
+): string | null {
   try {
     const value = JSON.parse(text.trim()) as Record<string, unknown>;
     const tool = value.tool ?? value.name ?? value.tool_name;
-    return typeof tool === "string" && !knownTools.has(tool) ? tool : null;
+    return typeof tool === "string" && !knownTools.has(tool) && !allowDynamicTool?.(tool) ? tool : null;
   } catch {
     return null;
   }
@@ -830,6 +976,33 @@ function hasImagePart(message: ChatMessage): boolean {
   return Array.isArray(message.content) && message.content.some((part) => part.type === "image_url");
 }
 
+const MAX_LOCAL_PATHS_PER_MESSAGE = 32;
+const MAX_LOCAL_PATH_LENGTH = 4_096;
+
+function normalizeLocalPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.slice(0, MAX_LOCAL_PATH_LENGTH)))]
+    .slice(0, MAX_LOCAL_PATHS_PER_MESSAGE);
+}
+
+function appendLocalPathContext(
+  content: string | ContentPart[],
+  localPaths: string[],
+): string | ContentPart[] {
+  if (localPaths.length === 0) return content;
+  const context = [
+    "[本地附件路径（来自桌面客户端）]",
+    ...localPaths.map((localPath) => `- ${localPath}`),
+    "这些路径对应用户选择的本地文件。需要对附件执行文件操作时，请使用完整路径作为工具 path 参数。",
+  ].join("\n");
+  if (typeof content === "string") return `${context}\n\n${content}`;
+  return [{ type: "text", text: context }, ...content];
+}
+
 function isWorkspacePath(workspace: string, candidate: unknown): boolean {
   if (typeof candidate !== "string" || !candidate.trim()) return false;
   const root = path.resolve(workspace);
@@ -837,6 +1010,23 @@ function isWorkspacePath(workspace: string, candidate: unknown): boolean {
   const rootCmp = process.platform === "win32" ? root.toLowerCase() : root;
   const resCmp = process.platform === "win32" ? resolved.toLowerCase() : resolved;
   return resCmp === rootCmp || resCmp.startsWith(rootCmp + path.sep);
+}
+
+function withSafetyContext(message: ChatMessage, safetyMode: SafetyMode): ChatMessage {
+  const policy = buildSafetyPrompt(safetyMode);
+  if (typeof message.content === "string") {
+    return {
+      ...message,
+      content: `${policy}\n\n## 当前用户任务\n${message.content}`,
+    };
+  }
+  return {
+    ...message,
+    content: [
+      { type: "text", text: `${policy}\n\n## 当前用户任务` },
+      ...message.content,
+    ],
+  };
 }
 
 function sanitizeReviewText(value: string): string {
@@ -869,7 +1059,27 @@ function toolLifecycleEvent(
   args: Record<string, unknown>,
   result: string,
   isError: boolean,
+  metadata?: Record<string, unknown>,
 ): AgentEvent | null {
+  if (name === "update_plan" && !isError) {
+    try {
+      const plan = metadata?.plan && typeof metadata.plan === "object"
+        ? metadata.plan as { items?: unknown; updatedAt?: unknown; note?: unknown }
+        : JSON.parse(result) as { items?: unknown; updatedAt?: unknown; note?: unknown };
+      if (Array.isArray(plan.items) && typeof plan.updatedAt === "number") {
+        return {
+          type: "plan",
+          plan: {
+            items: plan.items as import("@yoomclaw/protocol").PlanState["items"],
+            updatedAt: plan.updatedAt,
+            ...(typeof plan.note === "string" ? { note: plan.note } : {}),
+          },
+        };
+      }
+    } catch {
+      // The tool result remains visible in the tool card.
+    }
+  }
   if (name === "memory_save" || name === "memory_replace" || name === "memory_delete") {
     const store = args.store === "user" ? "user" : args.store === "memory" ? "memory" : null;
     if (!store) return null;
@@ -906,9 +1116,35 @@ function toolLifecycleEvent(
   return null;
 }
 
+function subagentLifecycleEvent(
+  name: string,
+  callId: string,
+  result: string,
+  isError: boolean,
+): AgentEvent | null {
+  if (name !== "delegate_task") return null;
+  let parsed: { taskId?: unknown; status?: unknown; summary?: unknown } = {};
+  try {
+    const value = JSON.parse(result) as unknown;
+    if (value && typeof value === "object") parsed = value as typeof parsed;
+  } catch {
+    // The raw result is still shown in the tool card.
+  }
+  const childTaskId = typeof parsed.taskId === "string" ? parsed.taskId : callId;
+  const completed = !isError && parsed.status === "completed";
+  return {
+    type: "subagent",
+    status: completed ? "completed" : "error",
+    taskId: childTaskId,
+    childSessionId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
+    message: typeof parsed.summary === "string" ? parsed.summary.slice(0, 1000) : result.slice(0, 1000),
+  };
+}
+
 export { BUILTIN_TOOLS, type BuiltinTool } from "./tools.js";
 export {
   buildToolPrompt,
+  buildSafetyPrompt,
   buildToolResultPrompt,
   parseToolCall,
   callFingerprint,
@@ -934,5 +1170,29 @@ export {
 } from "./config.js";
 export { HermesPromptAssembler, type PromptContext, textFromMessage } from "./prompt.js";
 export { ChromeCdpController } from "./browser.js";
+export type {
+  ToolServices,
+  ToolServiceContext,
+  PlanStore,
+  VisionService,
+  VisionRequest,
+  DocumentService,
+  DocumentRequest,
+  DocumentReadResult,
+  WebService,
+  WebFetchRequest,
+  WebFetchResult,
+  WebSearchRequest,
+  WebSearchResult,
+  CodeRunner,
+  CodeRunRequest,
+  CodeRunResult,
+  SubagentService,
+  SubagentRequest,
+  SubagentResult,
+  McpService,
+  McpToolSummary,
+  TrashService,
+} from "./services.js";
 
 export { createProvider, type LLMProvider, type ProviderConfig } from "@yoomclaw/llm-provider";

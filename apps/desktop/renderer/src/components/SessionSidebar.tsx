@@ -185,7 +185,7 @@ export default function SessionSidebar({
     <>
       {open && <div className="sidebar-overlay" onClick={onClose} />}
       <aside className={`sidebar ${open ? "open" : "closed"}`}>
-        <button className="new-session-btn" onClick={onCreate}>
+        <button className="new-session-btn" data-testid="session-new" onClick={onCreate}>
           <span className="plus">
             <PlusIcon size={16} />
           </span>
@@ -196,6 +196,7 @@ export default function SessionSidebar({
           <SearchIcon size={16} />
           <input
             className="search-input"
+            data-testid="session-search"
             value={query}
             onChange={(e) => handleSearch(e.target.value)}
             placeholder="搜索对话"
@@ -216,6 +217,7 @@ export default function SessionSidebar({
             filtered.map((s, index) => (
               <div
                 key={s.id}
+                data-testid={`session-row-${s.id}`}
                 ref={(node) => {
                   if (node) sessionRowRefs.current.set(s.id, node);
                   else sessionRowRefs.current.delete(s.id);
@@ -230,6 +232,7 @@ export default function SessionSidebar({
                   {editingId === s.id ? (
                     <input
                       className="session-title-input"
+                      data-testid="session-rename-input"
                       value={editingTitle}
                       autoFocus
                       onClick={(e) => e.stopPropagation()}
@@ -272,6 +275,8 @@ export default function SessionSidebar({
                 <button
                   type="button"
                   className="rename-btn session-action-icon"
+                  data-testid="session-rename"
+                  data-session-id={s.id}
                   onClick={(e) => {
                     e.stopPropagation();
                     beginRename(s.id, s.title || "");
@@ -284,6 +289,8 @@ export default function SessionSidebar({
                 <button
                   type="button"
                   className={`session-action-btn session-action-icon ${s.pinned ? "pinned" : ""} ${actionFeedbackKey === `pin:${s.id}` ? "action-feedback pin-feedback" : ""}`}
+                  data-testid="session-pin"
+                  data-session-id={s.id}
                   onClick={(e) => {
                     e.stopPropagation();
                     const animationToken = ++pinAnimationTokenRef.current;
@@ -317,11 +324,14 @@ export default function SessionSidebar({
                 <button
                   type="button"
                   className="delete-btn session-action-icon"
+                  data-testid="session-delete"
+                  data-session-id={s.id}
                   onClick={(e) => {
                     e.stopPropagation();
                     setPendingDeleteId(s.id);
                   }}
                   title="删除"
+                  aria-label="删除会话"
                 >
                   <TrashIcon size={14} />
                 </button>
@@ -335,7 +345,7 @@ export default function SessionSidebar({
             <span className="dot" />
             <span>本地运行 · 数据不上传</span>
           </div>
-          <button className="settings-btn" onClick={onOpenSettings}>
+          <button className="settings-btn" data-testid="settings-open" onClick={onOpenSettings}>
             <SettingsIcon size={20} />
             <span>设置</span>
           </button>
@@ -366,6 +376,7 @@ export default function SessionSidebar({
                 ref={deleteCancelRef}
                 type="button"
                 className="delete-dialog-cancel"
+                data-testid="session-delete-cancel"
                 onClick={() => setPendingDeleteId(null)}
               >
                 取消
@@ -373,6 +384,7 @@ export default function SessionSidebar({
               <button
                 type="button"
                 className="delete-dialog-confirm"
+                data-testid="session-delete-confirm"
                 onClick={confirmDelete}
               >
                 删除

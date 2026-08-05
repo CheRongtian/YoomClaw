@@ -166,7 +166,11 @@ Implement the `LLMProvider` interface in `@yoomclaw/llm-provider` and register i
 
 积墨 API 不支持原生 `system` / `tools` / 客户端完整 history，因此 Hermes 首轮会把规则、记忆、项目提示词和工具说明拼进 user 内容；后续轮次只发送工具结果，并始终使用同一个 provider session id。视觉机器人必须使用独立的 `JIMO_VISION_*` shareId 和 token；未配置时普通文字聊天仍可用。
 
-高风险操作仍会确认或阻止：越出工作区、读取 `.env` / SSH 私钥、管理员权限、递归危险删除、下载后直接执行、Git 提交/合并、浏览器输入和提交操作不会因为工作区自动执行而绕过安全边界。
+访问权限有三档：`请求批准`（编辑外部文件和使用互联网时始终询问）、`替我审批`（仅对检测到的风险操作请求批准）和 `完全访问权限`。完全访问会取消应用层的工作区、敏感路径和命令拦截，但仍使用当前 Windows 用户权限，不会自动提权。
+
+当前可按 Toolset 开关的扩展工具包括：`update_plan`、`vision_analyze`、`apply_patch`、`read_document`、`web_fetch` / `web_search`、`execute_code`、`parallel`、`delegate_task`、`tool_search` / MCP 调用和浏览器级 `computer_use`。默认开启计划、文档、网页、代码和编排能力；MCP 与 Computer Use 默认关闭。MCP 当前通过 `YOOMCLAW_MCP_URL` 提供 HTTP JSON-RPC 连接，搜索通过 `YOOMCLAW_SEARCH_URL` 配置。
+
+Office 文档使用本地无第三方依赖的解析 helper；旧版二进制 `.doc` / `.xls` 可能需要先转换为 `.docx` / `.xlsx`。`computer_use` 目前复用 Chrome CDP，Windows 原生桌面自动化仍需单独接入。
 
 验证命令：
 
@@ -175,6 +179,15 @@ pnpm -r --if-present lint
 pnpm --dir apps/desktop/renderer run typecheck
 pnpm --dir apps/desktop/renderer run build
 pnpm test
+```
+
+完整的真实 Jimo + Electron UI + Chrome 历史测试流程见 [UI_E2E_TEST_PLAN.md](./UI_E2E_TEST_PLAN.md)。常用入口：
+
+```bash
+pnpm test:e2e:ui -- --live
+pnpm test:e2e:ui -- --live --full-live
+pnpm test:e2e:chrome-history -- --start-chrome --wait-for-login --live-report <summary.json>
+pnpm test:e2e:history -- --live-report <summary.json> --rpa-script "<path-to-collect-jimo-history-rpa.mjs>"
 ```
 
 ## License

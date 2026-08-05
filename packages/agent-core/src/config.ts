@@ -109,7 +109,7 @@ export function loadRuntimeConfig(
     : undefined;
   const persistedToolsets = Array.isArray(persisted.toolsets)
     ? persisted.toolsets.filter((value): value is RuntimeConfig["toolsets"][number] =>
-        ["coding", "memory", "skills", "browser", "vision"].includes(String(value)),
+        ["coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration", "mcp", "computer"].includes(String(value)),
       )
     : undefined;
   const toolsets = (overrides.toolsets ?? persistedToolsets ?? rawToolsets ?? [
@@ -118,6 +118,10 @@ export function loadRuntimeConfig(
     "skills",
     "browser",
     "vision",
+    "planning",
+    "web",
+    "execution",
+    "orchestration",
   ]) as RuntimeConfig["toolsets"];
   const persistedMode = persisted.mode === "legacy" || persisted.mode === "hermes"
     ? persisted.mode
@@ -125,10 +129,10 @@ export function loadRuntimeConfig(
   const envMode = env.YOOMCLAW_AGENT_MODE === "legacy" || env.YOOMCLAW_AGENT_MODE === "hermes"
     ? env.YOOMCLAW_AGENT_MODE
     : undefined;
-  const persistedSafety = persisted.safetyMode === "confirm" || persisted.safetyMode === "workspace-auto"
+  const persistedSafety = persisted.safetyMode === "confirm" || persisted.safetyMode === "workspace-auto" || persisted.safetyMode === "full-access"
     ? persisted.safetyMode
     : undefined;
-  const envSafety = env.YOOMCLAW_SAFETY_MODE === "confirm" || env.YOOMCLAW_SAFETY_MODE === "workspace-auto"
+  const envSafety = env.YOOMCLAW_SAFETY_MODE === "confirm" || env.YOOMCLAW_SAFETY_MODE === "workspace-auto" || env.YOOMCLAW_SAFETY_MODE === "full-access"
     ? env.YOOMCLAW_SAFETY_MODE
     : undefined;
   const persistedPromptMode = persisted.promptMode === "provider" || persisted.promptMode === "local"

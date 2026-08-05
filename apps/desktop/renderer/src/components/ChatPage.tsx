@@ -6,17 +6,28 @@ import type {
   AgentEvent,
   ContentPart,
   FileUploadResponse,
+  LocalFileReadResponse,
   PdfReadResponse,
+  PlanState,
+  SafetyMode,
 } from "@yoomclaw/protocol";
-import { classifyFileInput } from "@yoomclaw/protocol";
+import {
+  classifyFileInput,
+  countAttachmentParts,
+  countImageAttachmentParts,
+  extractLocalFilePathCandidates,
+  getFileInputRule,
+  MAX_FILES_PER_MESSAGE,
+  MAX_IMAGES_PER_MESSAGE,
+} from "@yoomclaw/protocol";
 import MessageStream, {
   type LiveAssistant,
   type ToolCard,
-  messageText,
+  messageTextWithPaths,
   toolCardsFromEvents,
 } from "./MessageStream";
 import SessionSidebar from "./SessionSidebar";
-import ComposeBar, { type ComposePrefill } from "./ComposeBar";
+import ComposeBar, { type ComposeAttachment, type ComposePrefill } from "./ComposeBar";
 import WindowFrame from "./WindowFrame";
 import SpiralLogo from "./SpiralLogo";
 import SettingsPanel from "./SettingsPanel";
@@ -25,6 +36,7 @@ import {
   PanelLeftIcon,
   PlusIcon,
   ShieldIcon,
+  CheckIcon,
   WarningIcon,
   TaskIcon,
   ExportIcon,
@@ -32,14 +44,73 @@ import {
 } from "./icons";
 
 const GATEWAY_URL = "http://localhost:18789";
-const CONFIRM_MODE_KEY = "yoomclaw-confirm-mode";
+const SAFETY_MODE_KEY = "yoomclaw-safety-mode";
 const SIDEBAR_WIDTH_KEY = "yoomclaw-sidebar-width";
 const DEFAULT_SIDEBAR_WIDTH = 264;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 440;
 
+const SAFETY_MODE_OPTIONS: Array<{
+  value: SafetyMode;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: "confirm",
+    label: "请求批准",
+    detail: "编辑外部文件和使用互联网时始终询问",
+  },
+  {
+    value: "workspace-auto",
+    label: "替我审批",
+    detail: "仅对检测到的风险操作请求批准",
+  },
+  {
+    value: "full-access",
+    label: "完全访问权限",
+    detail: "不受限制地访问互联网和您电脑上的任何文件",
+  },
+];
+
+function normalizeSafetyMode(value: unknown): SafetyMode {
+  if (value === "confirm" || value === "workspace-auto" || value === "full-access") {
+    return value;
+  }
+  // Older clients stored the two-state `no-confirm` value locally.
+  if (value === "no-confirm") return "workspace-auto";
+  return "workspace-auto";
+}
+
 function clampSidebarWidth(width: number): number {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
+}
+
+const SESSION_TITLE_MAX_LENGTH = 80;
+
+function firstInputTitle(content: ChatMessage["content"]): string | undefined {
+  const text = typeof content === "string"
+    ? content
+    : content
+      .filter((part) => part.type === "text")
+      .map((part) => part.type === "text" ? part.text : "")
+      .join(" ");
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized) {
+    return normalized.length > SESSION_TITLE_MAX_LENGTH
+      ? `${normalized.slice(0, SESSION_TITLE_MAX_LENGTH - 1).trimEnd()}…`
+      : normalized;
+  }
+  return Array.isArray(content) && content.some((part) => part.type !== "text")
+    ? "附件"
+    : undefined;
+}
+
+function planFromEvents(events: AgentEvent[]): PlanState | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === "plan") return event.plan;
+  }
+  return null;
 }
 
 /** 读取本地文件为 data URL，用于通过网关 /api/upload/file 上传。 */
@@ -50,6 +121,70 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+async function resolveLocalFilePath(
+  apiBase: string,
+  filePath: string,
+): Promise<LocalFileReadResponse> {
+  const response = await fetch(`${apiBase}/api/files/read-local`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: filePath }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const body = await response.json().catch(() => null) as
+    | (Partial<LocalFileReadResponse> & { code?: unknown; error?: unknown })
+    | null;
+  if (!response.ok || body?.ok !== true || typeof body.dataUrl !== "string") {
+    const code = typeof body?.code === "string" ? body.code : `HTTP_${response.status}`;
+    throw new Error(code);
+  }
+  return body as LocalFileReadResponse;
+}
+
+function appendPdfParts(
+  fileName: string,
+  parsed: PdfReadResponse,
+  displayParts: ContentPart[],
+  providerParts: ContentPart[],
+): void {
+  const extracted = parsed.text.trim();
+  const content = extracted || "[PDF 中未提取到可复制文本，可能是扫描件]";
+  const limitNotice = parsed.truncated
+    ? "\n[PDF 内容已截断，仅发送前 50 页或 6 万字符]"
+    : "";
+  displayParts.push({
+    type: "text",
+    text: `[已解析 PDF：${fileName}，共 ${parsed.pages} 页${parsed.truncated ? "，内容已截断" : ""}]`,
+  });
+  providerParts.push({
+    type: "text",
+    text: `[本地 PDF 内容：${fileName}]\n${content}${limitNotice}`,
+  });
+}
+
+function appendAttachmentFailure(
+  fileName: string,
+  reason: string,
+  displayParts: ContentPart[],
+  providerParts: ContentPart[],
+  attachmentFailures: string[],
+): void {
+  const failure = `[附件 ${fileName} ${reason}]`;
+  displayParts.push({ type: "text", text: failure });
+  providerParts.push({ type: "text", text: failure });
+  attachmentFailures.push(failure);
+}
+
+function describeLocalPathFailure(error: unknown): string {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "LOCAL_FILE_BLOCKED") return "当前访问模式不允许读取工作区外文件";
+  if (code === "FILE_TOO_LARGE") return "文件超过单文件大小限制";
+  if (code === "UNSUPPORTED_FILE_TYPE") return "不支持的文件类型";
+  if (code === "LOCAL_FILE_NOT_A_FILE") return "路径不是文件";
+  if (code === "LOCAL_FILE_READ_FAILED") return "文件读取失败";
+  return code || "本地路径不可用";
 }
 
 function contentFromParts(parts: ContentPart[]): string | ContentPart[] {
@@ -95,6 +230,7 @@ interface SessionData {
   id: string;
   title: string;
   messages: ChatMessage[];
+  meta?: Record<string, unknown>;
   runs?: Array<{
     status: "running" | "completed" | "interrupted" | "failed";
     events?: AgentEvent[];
@@ -114,6 +250,7 @@ export default function ChatPage() {
   const [currentMessages, setCurrentMessages] = useState<ChatMessage[]>([]);
   const [historicalTools, setHistoricalTools] = useState<ToolCard[]>([]);
   const [runEvents, setRunEvents] = useState<AgentEvent[]>([]);
+  const [plan, setPlan] = useState<PlanState | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
   const currentSessionTitleRef = useRef("YoomClaw");
   const sessionViewRevisionRef = useRef(0);
@@ -142,13 +279,12 @@ export default function ChatPage() {
   const [runNotice, setRunNotice] = useState<string | null>(null);
   const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const [workspace, setWorkspace] = useState("");
-  const [confirmMode, setConfirmMode] = useState<"confirm" | "no-confirm">(
-    () =>
-      (localStorage.getItem(CONFIRM_MODE_KEY) as "confirm" | "no-confirm") ||
-      "confirm",
-  );
-  const confirmModeRef = useRef<"confirm" | "no-confirm">("confirm");
-  confirmModeRef.current = confirmMode;
+  const [safetyMode, setSafetyMode] = useState<SafetyMode>(() => normalizeSafetyMode(
+    localStorage.getItem(SAFETY_MODE_KEY) ?? localStorage.getItem("yoomclaw-confirm-mode"),
+  ));
+  const safetyModeRef = useRef<SafetyMode>("workspace-auto");
+  safetyModeRef.current = safetyMode;
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -161,6 +297,8 @@ export default function ChatPage() {
   const wsGenerationRef = useRef(0);
   const wsReconnectTimerRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const modePickerRef = useRef<HTMLDivElement | null>(null);
+  const selectedSafetyMode = SAFETY_MODE_OPTIONS.find((option) => option.value === safetyMode) ?? SAFETY_MODE_OPTIONS[1];
 
   useEffect(() => {
     refreshSessions();
@@ -172,9 +310,25 @@ export default function ChatPage() {
   useEffect(() => {
     let alive = true;
     void fetch(`${apiBase}/api/config`)
-      .then((res) => res.ok ? res.json() as Promise<{ workspace?: string }> : null)
+      .then((res) => res.ok ? res.json() as Promise<{
+        workspace?: string;
+        safetyMode?: SafetyMode;
+        promptMode?: "provider" | "local";
+      }> : null)
       .then((config) => {
-        if (alive && config?.workspace) setWorkspace(config.workspace);
+        if (!alive) return;
+        if (config?.workspace) setWorkspace(config.workspace);
+        if (config?.safetyMode) setSafetyMode(normalizeSafetyMode(config.safetyMode));
+        // The Provider topic is the single source of static behavior rules.
+        // Upgrade an older persisted local-mode setting when the chat opens so
+        // the renderer never causes the full local prompt bundle to be sent.
+        if (config?.promptMode === "local") {
+          void fetch(`${apiBase}/api/config`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ promptMode: "provider" }),
+          }).catch(() => {});
+        }
       })
       .catch(() => {});
     return () => {
@@ -238,6 +392,7 @@ export default function ChatPage() {
           setCurrentMessages([]);
           setHistoricalTools([]);
           setRunEvents([]);
+          setPlan(null);
           setRunNotice(null);
         } else if (currentId && !data.some((session) => session.id === currentId)) {
           sessionViewRevisionRef.current += 1;
@@ -248,6 +403,7 @@ export default function ChatPage() {
           setCurrentMessages([]);
           setHistoricalTools([]);
           setRunEvents([]);
+          setPlan(null);
           setLive(null);
           setConfirmDialog(null);
           setStreaming(false);
@@ -299,6 +455,10 @@ export default function ChatPage() {
           setCurrentMessages(data.messages ?? []);
           const lastRun = data.runs?.[data.runs.length - 1];
           setRunEvents(lastRun?.events ?? []);
+          const persistedPlan = data.meta?.plan && typeof data.meta.plan === "object"
+            ? data.meta.plan as PlanState
+            : null;
+          setPlan(planFromEvents(lastRun?.events ?? []) ?? persistedPlan);
           setHistoricalTools(toolCardsFromEvents(lastRun?.events ?? []));
           setRunNotice(
             lastRun?.status === "interrupted"
@@ -318,6 +478,7 @@ export default function ChatPage() {
         }
         setCurrentMessages([]);
         setRunEvents([]);
+        setPlan(null);
         setHistoricalTools([]);
         setRunNotice(null);
       }
@@ -352,20 +513,15 @@ export default function ChatPage() {
     setCurrentMessages([]);
     setHistoricalTools([]);
     setRunEvents([]);
+    setPlan(null);
     setRunNotice(null);
     setEditTargetIndex(null);
     setCreatingSession(true);
     try {
-      const title = `新的对话 ${new Date().toLocaleString("zh-CN", {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      })}`;
       const res = await fetch(`${apiBase}/api/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
+        body: JSON.stringify({}),
       });
       if (!res.ok) throw new Error(`session creation failed: ${res.status}`);
       const session = (await res.json()) as SessionSummary;
@@ -383,6 +539,7 @@ export default function ChatPage() {
       setCurrentMessages([]);
       setHistoricalTools([]);
       setRunEvents([]);
+      setPlan(null);
       setRunNotice(null);
       setEditTargetIndex(null);
     } catch (err) {
@@ -611,6 +768,7 @@ export default function ChatPage() {
           setCurrentMessages([]);
           setHistoricalTools([]);
           setRunEvents([]);
+          setPlan(null);
           setRunNotice(null);
           setEditTargetIndex(null);
         }
@@ -622,7 +780,7 @@ export default function ChatPage() {
   );
 
   // ===== WebSocket 连接 =====
-  const sendConfirmMode = useCallback((mode: "confirm" | "no-confirm") => {
+  const sendSafetyMode = useCallback((mode: SafetyMode) => {
     const sock = wsRef.current;
     if (sock && sock.readyState === WebSocket.OPEN) {
       try {
@@ -632,9 +790,25 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(CONFIRM_MODE_KEY, confirmMode);
-    sendConfirmMode(confirmMode);
-  }, [confirmMode, sendConfirmMode]);
+    localStorage.setItem(SAFETY_MODE_KEY, safetyMode);
+    sendSafetyMode(safetyMode);
+  }, [safetyMode, sendSafetyMode]);
+
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!modePickerRef.current?.contains(event.target as Node)) setModeMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setModeMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [modeMenuOpen]);
 
   const connectWs = useCallback(() => {
     if (disposedRef.current) return;
@@ -653,7 +827,7 @@ export default function ChatPage() {
     socket.onopen = () => {
       if (!isCurrentSocket()) return;
       setConnected(true);
-      sendConfirmMode(confirmModeRef.current);
+      sendSafetyMode(safetyModeRef.current);
       void refreshSessions();
     };
     socket.onmessage = (e) => {
@@ -679,7 +853,7 @@ export default function ChatPage() {
     socket.onerror = () => {
       /* 会紧接着触发 close */
     };
-  }, [apiBase, refreshSessions]);
+  }, [apiBase, refreshSessions, sendSafetyMode]);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -781,6 +955,13 @@ export default function ChatPage() {
             percent: ev.status === "completed" ? 100 : 0,
           },
         };
+        break;
+      case "plan":
+        setPlan(ev.plan);
+        next = { ...l, progress: { name: "任务计划已更新", percent: 0 } };
+        break;
+      case "subagent":
+        next = { ...l, progress: { name: `子 Agent ${ev.status}`, percent: ev.status === "completed" ? 100 : 0 } };
         break;
       default:
         next = l;
@@ -895,9 +1076,15 @@ export default function ChatPage() {
     runIdRef.current = null;
   }, [commitLive, currentSessionId]);
 
-  const toggleConfirmMode = useCallback(() => {
-    setConfirmMode((m) => (m === "confirm" ? "no-confirm" : "confirm"));
-  }, []);
+  const selectSafetyMode = useCallback((mode: SafetyMode) => {
+    setSafetyMode(mode);
+    setModeMenuOpen(false);
+    void fetch(`${apiBase}/api/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ safetyMode: mode }),
+    }).catch(() => {});
+  }, [apiBase]);
 
   /** 空状态建议 chip：先建会话，再把提示词预填进输入框 */
   const startWithPrompt = useCallback(
@@ -911,12 +1098,12 @@ export default function ChatPage() {
   const beginEditMessage = useCallback((index: number, message: ChatMessage) => {
     if (message.role !== "user") return;
     setEditTargetIndex(index);
-    setPrefill({ text: messageText(message.content), nonce: Date.now() });
+    setPrefill({ text: messageTextWithPaths(message), nonce: Date.now() });
     setRunNotice("正在编辑这条消息；发送后会从这里创建新的会话分支。");
   }, []);
 
   const sendMessage = useCallback(
-    async (text: string, files: File[]) => {
+    async (text: string, files: ComposeAttachment[], inheritedLocalPaths: string[] = []) => {
       const sessionIdAtStart = currentSessionIdRef.current;
       if (!sessionIdAtStart || streaming || runIdRef.current) return false;
       const initialSocket = wsRef.current;
@@ -934,7 +1121,14 @@ export default function ChatPage() {
       const providerParts: ContentPart[] = [];
       const displayParts: ContentPart[] = [];
       const attachmentFailures: string[] = [];
+      let localPathSucceeded = false;
       const trimmed = text.trim();
+      const localPathCandidates = extractLocalFilePathCandidates(trimmed);
+      const localPaths = new Set<string>([
+        ...inheritedLocalPaths,
+        ...(branchIndex !== null ? currentMessages[branchIndex]?.localPaths ?? [] : []),
+        ...localPathCandidates,
+      ].map((value) => value.trim()).filter(Boolean));
       if (trimmed) {
         const textPart = { type: "text" as const, text: trimmed };
         providerParts.push(textPart);
@@ -943,11 +1137,23 @@ export default function ChatPage() {
 
       const filesToProcess: Array<{
         file: File;
-        kind: "document" | "image" | "audio" | "video";
+        localPath?: string;
+        kind?: "document" | "image" | "audio" | "video";
         extension: string;
+        pathOnly?: boolean;
       }> = [];
-      for (const file of files) {
+      for (const attachment of files) {
+        const file = attachment.file;
         const descriptor = classifyFileInput(file.name, file.size, file.type);
+        if ((!descriptor.accepted || !descriptor.kind) && attachment.path) {
+          filesToProcess.push({
+            file,
+            localPath: attachment.path,
+            extension: descriptor.extension,
+            pathOnly: true,
+          });
+          continue;
+        }
         if (!descriptor.accepted || !descriptor.kind) {
           const failure = `[附件 ${file.name} ${descriptor.rejectionCode ?? "UNSUPPORTED_FILE_TYPE"}]`;
           displayParts.push({ type: "text", text: failure });
@@ -957,12 +1163,19 @@ export default function ChatPage() {
         }
         filesToProcess.push({
           file,
+          localPath: attachment.path,
           kind: descriptor.kind,
           extension: descriptor.extension,
+          pathOnly: attachment.pathOnly,
         });
       }
 
-      for (const { file, kind, extension } of filesToProcess) {
+      for (const { file, localPath, kind, extension, pathOnly } of filesToProcess) {
+        if (localPath) localPaths.add(localPath.trim());
+        if (pathOnly) {
+          displayParts.push({ type: "text", text: `[已附加本地文件：${file.name}]` });
+          continue;
+        }
         const isPdf = kind === "document" && extension === "pdf";
         try {
           if (isPdf) {
@@ -1047,17 +1260,145 @@ export default function ChatPage() {
         }
       }
 
+      // Promote explicit local image/document paths in the user's text into
+      // the same attachment pipeline used by the paperclip picker. The
+      // Gateway performs the filesystem read and applies the active safety
+      // boundary; the renderer never reads arbitrary paths directly.
+      for (const filePath of localPathCandidates) {
+        const pathRule = getFileInputRule(filePath);
+        try {
+          const localFile = await resolveLocalFilePath(apiBase, filePath);
+          const isPdf = localFile.kind === "document" && localFile.extension === "pdf";
+          if (isPdf) {
+            const pdfResp = await fetch(`${apiBase}/api/files/read-pdf`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url: localFile.dataUrl, fileName: localFile.fileName }),
+              signal: AbortSignal.timeout(120_000),
+            });
+            if (pdfResp.ok) {
+              appendPdfParts(
+                localFile.fileName,
+                (await pdfResp.json()) as PdfReadResponse,
+                displayParts,
+                providerParts,
+              );
+              localPathSucceeded = true;
+            } else {
+              const errorBody = await pdfResp.json().catch(() => null) as
+                | { code?: unknown; message?: unknown }
+                | null;
+              const detail = typeof errorBody?.code === "string"
+                ? `HTTP ${pdfResp.status} ${errorBody.code}`
+                : `HTTP ${pdfResp.status}`;
+              appendAttachmentFailure(
+                localFile.fileName,
+                `本地 PDF 解析失败：${detail}`,
+                displayParts,
+                providerParts,
+                attachmentFailures,
+              );
+            }
+            continue;
+          }
+
+          const currentAttachments = countAttachmentParts(providerParts);
+          const currentImages = countImageAttachmentParts(providerParts);
+          if (currentAttachments >= MAX_FILES_PER_MESSAGE) {
+            appendAttachmentFailure(
+              localFile.fileName,
+              `超过单条消息最多 ${MAX_FILES_PER_MESSAGE} 个附件`,
+              displayParts,
+              providerParts,
+              attachmentFailures,
+            );
+            continue;
+          }
+          if (localFile.kind === "image" && currentImages >= MAX_IMAGES_PER_MESSAGE) {
+            appendAttachmentFailure(
+              localFile.fileName,
+              `超过单条消息最多 ${MAX_IMAGES_PER_MESSAGE} 张图片`,
+              displayParts,
+              providerParts,
+              attachmentFailures,
+            );
+            continue;
+          }
+
+          const uploadResp = await fetch(`${apiBase}/api/upload/file`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              url: localFile.dataUrl,
+              source: "desktop-local-path",
+              fileName: localFile.fileName,
+              mimeType: localFile.mimeType,
+              kind: localFile.kind,
+              sizeBytes: localFile.sizeBytes,
+            }),
+            signal: AbortSignal.timeout(90_000),
+          });
+          if (!uploadResp.ok) {
+            const errorBody = await uploadResp.json().catch(() => null) as
+              | { code?: unknown }
+              | null;
+            const code = typeof errorBody?.code === "string" ? ` ${errorBody.code}` : "";
+            appendAttachmentFailure(
+              localFile.fileName,
+              `本地路径上传失败：HTTP ${uploadResp.status}${code}`,
+              displayParts,
+              providerParts,
+              attachmentFailures,
+            );
+            continue;
+          }
+
+          const uploaded = (await uploadResp.json()) as FileUploadResponse;
+          if (localFile.kind === "image") {
+            providerParts.push({ type: "image_url", image_url: { url: uploaded.url } });
+            displayParts.push({ type: "image_url", image_url: { url: uploaded.url } });
+          } else {
+            providerParts.push({ type: "file_url", file_url: { url: uploaded.url, fileId: uploaded.fileId } });
+            displayParts.push({ type: "file_url", file_url: { url: uploaded.url, fileId: uploaded.fileId } });
+          }
+          displayParts.push({ type: "text", text: `[已附加本地文件：${localFile.fileName}]` });
+          localPathSucceeded = true;
+        } catch (error) {
+          const reason = error instanceof DOMException && error.name === "TimeoutError"
+            ? "本地路径读取超时"
+            : describeLocalPathFailure(error);
+          const fallbackName = filePath.split(/[\\/]/).pop() || filePath;
+          // A path that does not match the shared policy should still be
+          // visible to the user, but it is not sent as a binary attachment.
+          appendAttachmentFailure(
+            pathRule ? fallbackName : filePath,
+            reason,
+            displayParts,
+            providerParts,
+            attachmentFailures,
+          );
+        }
+      }
+
       if (!isSendStillCurrent()) return false;
+      const normalizedLocalPaths = [...new Set([...localPaths]
+        .map((value) => value.trim())
+        .filter(Boolean))];
       const userMsg: ChatMessage = {
         role: "user",
         content: contentFromParts(displayParts),
+        ...(normalizedLocalPaths.length > 0 ? { localPaths: normalizedLocalPaths } : {}),
       };
       const messageForAgent: ChatMessage = {
         ...userMsg,
         agentContext: contentFromParts(providerParts),
       };
 
-      const allAttachmentsFailed = files.length > 0 && attachmentFailures.length >= files.length;
+      const hasLocalPathContext = normalizedLocalPaths.length > 0;
+      const allAttachmentsFailed = files.length > 0 &&
+        attachmentFailures.length >= files.length &&
+        !localPathSucceeded &&
+        !hasLocalPathContext;
       if (allAttachmentsFailed) {
         if (!isSendStillCurrent()) return false;
         liveRef.current = null;
@@ -1094,6 +1435,7 @@ export default function ChatPage() {
           setCurrentMessages((previous) => previous.slice(0, branchIndex));
           setHistoricalTools([]);
           setRunEvents([]);
+          setPlan(null);
           setEditTargetIndex(null);
         } catch (err) {
           console.error("Failed to create message branch:", err);
@@ -1117,6 +1459,7 @@ export default function ChatPage() {
             sessionId: sessionIdAtStart,
             runId,
             message: messageForAgent,
+            safetyMode: safetyModeRef.current,
           }),
         );
       } catch (err) {
@@ -1133,15 +1476,26 @@ export default function ChatPage() {
         setRunNotice("Message could not be sent; please retry.");
         return false;
       }
+      const title = firstInputTitle(userMsg.content);
+      if (title) {
+        setSessions((previous) => sortSessionSummaries(previous.map((session) => (
+          session.id === sessionIdAtStart
+            && session.messageCount === 0
+            && (session.title === "新对话" || /^Session \d+$/.test(session.title))
+            ? { ...session, title }
+            : session
+        ))));
+      }
       setRunNotice(null);
       setCurrentMessages((prev) => [...prev, userMsg]);
       setRunEvents([]);
+      setPlan(null);
       liveRef.current = fresh;
       setLive(fresh);
       setStreaming(true);
       return true;
     },
-    [streaming, apiBase, editTargetIndex],
+    [streaming, apiBase, editTargetIndex, currentMessages],
   );
 
   const retryAssistantMessage = useCallback((assistantIndex: number) => {
@@ -1150,9 +1504,9 @@ export default function ChatPage() {
       .reverse()
       .find((message) => message.role === "user");
     if (!userMessage) return;
-    const text = messageText(userMessage.content).trim();
+    const text = messageTextWithPaths(userMessage).trim();
     if (!text) return;
-    void sendMessage(text, []);
+    void sendMessage(text, [], userMessage.localPaths ?? []);
   }, [currentMessages, sendMessage]);
 
   const retryLastTask = useCallback(() => {
@@ -1162,9 +1516,9 @@ export default function ChatPage() {
       .reverse()
       .find((message) => message.role === "user");
     if (!userMessage) return;
-    const text = messageText(userMessage.content).trim();
+    const text = messageTextWithPaths(userMessage).trim();
     if (!text) return;
-    void sendMessage(text, []);
+    void sendMessage(text, [], userMessage.localPaths ?? []);
   }, [currentMessages, sendMessage, streaming]);
 
   const confirmDecision = useCallback(
@@ -1241,6 +1595,7 @@ export default function ChatPage() {
         {sidebarOpen && (
           <div
             className={`sidebar-resizer ${sidebarResizing ? "active" : ""}`}
+            data-testid="sidebar-resizer"
             role="separator"
             aria-orientation="vertical"
             aria-label="调整侧边栏宽度"
@@ -1270,6 +1625,7 @@ export default function ChatPage() {
             <div className="header-left">
               <button
                 className="header-btn"
+                data-testid="sidebar-toggle"
                 onClick={() => setSidebarOpen((v) => !v)}
                 aria-label="切换侧栏"
                 title="切换侧栏"
@@ -1284,6 +1640,7 @@ export default function ChatPage() {
               <button
                 type="button"
                 className={`workbench-toggle ${workbenchOpen ? "active" : ""}`}
+                data-testid="workbench-open"
                 onClick={() => setWorkbenchOpen((open) => !open)}
                 title="打开任务工作台"
               >
@@ -1293,6 +1650,7 @@ export default function ChatPage() {
               <button
                 type="button"
                 className="export-toggle"
+                data-testid="export-session"
                 onClick={exportCurrentSession}
                 title="导出当前对话（Ctrl+Shift+E）"
                 disabled={!currentSessionId}
@@ -1307,16 +1665,43 @@ export default function ChatPage() {
                 <span className="conn-dot" />
                 {connected ? "已连接" : "连接中"}
               </span>
-              <button
-                type="button"
-                className={`mode-chip ${confirmMode}`}
-                onClick={toggleConfirmMode}
-                title="切换执行模式"
-                aria-label="切换工具执行模式；工作区内安全操作自动执行，高风险操作始终需要确认"
-              >
-                <ShieldIcon size={16} />
-                {confirmMode === "no-confirm" ? "工作区自动" : "高风险确认"}
-              </button>
+              <div className="mode-picker" ref={modePickerRef}>
+                <button
+                  type="button"
+                  className={`mode-chip ${safetyMode}`}
+                  data-testid="safety-mode"
+                  onClick={() => setModeMenuOpen((open) => !open)}
+                  title={selectedSafetyMode.detail}
+                  aria-haspopup="menu"
+                  aria-expanded={modeMenuOpen}
+                  aria-label={`访问权限：${selectedSafetyMode.label}`}
+                >
+                  <ShieldIcon size={16} />
+                  {selectedSafetyMode.label}
+                </button>
+                {modeMenuOpen && (
+                  <div className="mode-menu" role="menu" aria-label="访问权限">
+                    <div className="mode-menu-title">访问权限</div>
+                    {SAFETY_MODE_OPTIONS.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="menuitemradio"
+                        data-testid={`safety-mode-${option.value}`}
+                        aria-checked={safetyMode === option.value}
+                        className={`mode-option ${safetyMode === option.value ? "selected" : ""} ${option.value}`}
+                        onClick={() => selectSafetyMode(option.value)}
+                      >
+                        <span className="mode-option-copy">
+                          <span className="mode-option-label">{option.label}</span>
+                          <span className="mode-option-detail">{option.detail}</span>
+                        </span>
+                        {safetyMode === option.value && <CheckIcon size={15} />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </header>
 
@@ -1332,7 +1717,7 @@ export default function ChatPage() {
               <SpiralLogo size={56} />
               <h2>YoomClaw</h2>
               <p>你的本地 AI 助手 · 数据不上传</p>
-              <button className="empty-cta" onClick={createSession}>
+              <button className="empty-cta" data-testid="session-empty-cta" onClick={createSession}>
                 <PlusIcon size={16} />
                 <span>开始新对话</span>
               </button>
@@ -1341,6 +1726,7 @@ export default function ChatPage() {
                   <button
                     key={t}
                     className="empty-chip"
+                    data-testid={`session-empty-prompt-${t}`}
                     onClick={() => startWithPrompt(t)}
                   >
                     {t}
@@ -1352,7 +1738,9 @@ export default function ChatPage() {
             <MessageStream
               messages={currentMessages}
               historicalTools={historicalTools}
+              plan={plan}
               live={live ?? undefined}
+              endRef={messagesEndRef}
               onEditUser={beginEditMessage}
               onRetryAssistant={retryAssistantMessage}
             />
@@ -1367,7 +1755,6 @@ export default function ChatPage() {
             prefill={prefill}
             draftKey={currentSessionId}
           />
-          <div ref={messagesEndRef} />
         </main>
         {workbenchOpen && (
           <WorkbenchPanel
@@ -1385,7 +1772,7 @@ export default function ChatPage() {
       </div>
 
       {confirmDialog && (
-        <div className="modal-mask" onClick={() => confirmDecision(false)}>
+        <div className="modal-mask" data-testid="confirm-mask" onClick={() => confirmDecision(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <div className="modal-icon">
@@ -1417,10 +1804,10 @@ export default function ChatPage() {
             )}
 
             <div className="modal-actions">
-              <button className="btn deny" onClick={() => confirmDecision(false)}>
+              <button className="btn deny" data-testid="confirm-deny" onClick={() => confirmDecision(false)}>
                 拒绝
               </button>
-              <button className="btn allow" onClick={() => confirmDecision(true)}>
+              <button className="btn allow" data-testid="confirm-allow" onClick={() => confirmDecision(true)}>
                 允许
               </button>
             </div>
@@ -1474,6 +1861,7 @@ export default function ChatPage() {
           display: flex;
           flex-direction: column;
           min-width: 0;
+          min-height: 0;
           background: var(--bg);
         }
         .chat-header {
@@ -1606,7 +1994,10 @@ export default function ChatPage() {
           background: var(--success);
           animation: yc-pulse 2.4s ease-in-out infinite;
         }
-        /* 确认模式 chip：盾牌图标 + 文字；放行态转警示色 */
+        .mode-picker {
+          position: relative;
+          z-index: 30;
+        }
         .mode-chip {
           display: flex;
           align-items: center;
@@ -1626,10 +2017,78 @@ export default function ChatPage() {
           border-color: var(--border-active);
           color: var(--text);
         }
-        .mode-chip.no-confirm {
+        .mode-chip.workspace-auto {
           background: color-mix(in srgb, var(--warning) 14%, transparent);
           border-color: var(--warning);
           color: var(--warning);
+        }
+        .mode-chip.full-access {
+          background: color-mix(in srgb, var(--error) 14%, transparent);
+          border-color: color-mix(in srgb, var(--error) 72%, var(--border));
+          color: var(--error);
+        }
+        .mode-menu {
+          position: absolute;
+          top: calc(100% + 8px);
+          right: 0;
+          width: min(360px, calc(100vw - 24px));
+          padding: 8px;
+          border: 1px solid var(--border-active);
+          border-radius: 14px;
+          background: var(--bg-elevated);
+          box-shadow: 0 18px 44px rgba(0, 0, 0, 0.4);
+          animation: yc-pop 160ms var(--ease-emphasized) both;
+        }
+        .mode-menu-title {
+          padding: 5px 10px 8px;
+          color: var(--text-muted);
+          font-size: 11px;
+          font-weight: 600;
+          letter-spacing: .04em;
+          text-transform: uppercase;
+        }
+        .mode-option {
+          width: 100%;
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          padding: 10px;
+          border-radius: 10px;
+          color: var(--text-secondary);
+          text-align: left;
+          transition: background .15s, color .15s;
+        }
+        .mode-option:hover,
+        .mode-option.selected {
+          background: var(--bg-element);
+          color: var(--text);
+        }
+        .mode-option.full-access.selected,
+        .mode-option.full-access:hover {
+          background: color-mix(in srgb, var(--error) 10%, var(--bg-element));
+          color: var(--error);
+        }
+        .mode-option-copy {
+          min-width: 0;
+          display: flex;
+          flex: 1;
+          flex-direction: column;
+          gap: 3px;
+        }
+        .mode-option-label {
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1.3;
+        }
+        .mode-option-detail {
+          color: var(--text-muted);
+          font-size: 11px;
+          line-height: 1.45;
+        }
+        .mode-option :global(svg) {
+          flex: 0 0 auto;
+          margin-top: 2px;
+          color: var(--primary);
         }
         .empty-state {
           flex: 1;

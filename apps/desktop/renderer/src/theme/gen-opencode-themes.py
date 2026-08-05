@@ -1,16 +1,21 @@
 """把 opencode 主题 JSON 批量转换为 YoomClaw 的 themes-data.ts。
 
 来源: opencode 主题包 (https://github.com/anomalyco/opencode)
-本地 JSON: C:\\Users\\12992\\.qclaw\\workspace\\opencode-themes\\*.json
+本地 JSON: 由 YOOMCLAW_OPENCODE_THEMES_DIR 指定，默认 ~/.qclaw/workspace/opencode-themes/*.json
 
 输出: apps/desktop/renderer/src/theme/themes-data.ts
 每个主题生成 dark + light 两套调色板，并展开为 THEMES_EXTRA 数组。
 """
 import json
+import os
 import sys
 from pathlib import Path
 
-THEMES_DIR = Path(r"C:\Users\12992\.qclaw\workspace\opencode-themes")
+# Override this when the source themes live outside the default local folder.
+THEMES_DIR = Path(os.environ.get(
+    "YOOMCLAW_OPENCODE_THEMES_DIR",
+    str(Path.home() / ".qclaw" / "workspace" / "opencode-themes"),
+))
 OUT_FILE = Path(__file__).resolve().parent / "themes-data.ts"
 
 # opencode 语义键 -> YoomClaw CSS 变量

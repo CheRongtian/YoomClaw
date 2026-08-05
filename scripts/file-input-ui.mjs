@@ -12,9 +12,9 @@ import {
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
-const INPUT_ROOT = path.resolve("C:\\Users\\12992\\Desktop\\work");
 const UI_CHAT_REQUEST_LIMIT = 1;
 const TIMEOUT_MS = 180_000;
+const TEST_MARKER_PREFIX = "File-input regression test";
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
   "node_modules",
@@ -47,6 +47,51 @@ const MIME_TYPES = {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function parseArgs(argv) {
+  const args = {
+    live: false,
+    reportDir: path.join(REPO_ROOT, ".tmp", "yoomclaw-file-input-tests"),
+    inputRoot: "",
+    keepArtifacts: false,
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    if (current === "--live") {
+      args.live = true;
+      continue;
+    }
+    if (current === "--keep-artifacts") {
+      args.keepArtifacts = true;
+      continue;
+    }
+    if (current === "--help" || current === "-h") {
+      console.log("Usage: pnpm test:file-inputs:ui -- --live [--report-dir <dir>] [--input-root <isolated-dir>] [--keep-artifacts]");
+      process.exit(0);
+    }
+    const [name, inline] = current.split("=", 2);
+    const value = inline ?? argv[++index];
+    if (!value) throw new Error(`Missing value for ${name}`);
+    if (name === "--report-dir") args.reportDir = path.resolve(value);
+    else if (name === "--input-root") args.inputRoot = path.resolve(value);
+    else throw new Error(`Unknown option: ${current}`);
+  }
+  if (!args.live) {
+    throw new Error("真实端到端 UI 测试必须显式传入 --live；它会调用 Jimo 并产生后台记录。");
+  }
+  return args;
+}
+
+async function createFixtureRoot() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "yoomclaw-file-input-fixtures-"));
+  await fs.mkdir(path.join(root, "中文目录"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, "中文目录", "测试说明.md"),
+    "# YoomClaw UI 文件输入测试\n\n这是隔离临时工作区中的中文 Markdown 文件。\n",
+    "utf8",
+  );
+  return root;
 }
 
 function isSensitive(fileName, relativePath) {
@@ -186,32 +231,33 @@ async function closeElectron(electronApp) {
 }
 
 async function main() {
-  if (!process.argv.includes("--live")) {
-    throw new Error("UI 真实冒烟需要显式传入 --live；它会启动 Gateway，并发送 1 次真实 Jimo 请求。");
-  }
-
-  await fs.access(INPUT_ROOT);
+  const args = parseArgs(process.argv.slice(2));
+  const ownsInputRoot = !args.inputRoot;
   await assertGatewayFree();
-  const inputFile = await findInputFile(INPUT_ROOT);
+  const inputRoot = args.inputRoot || await createFixtureRoot();
+  await fs.access(inputRoot);
+  const inputFile = await findInputFile(inputRoot);
   const rendererPort = await findFreePort();
   const renderer = startRenderer(rendererPort);
-  const reportRoot = path.resolve(
-    process.argv.find((value) => value.startsWith("--report-dir="))?.slice("--report-dir=".length)
-      ?? path.join(INPUT_ROOT, "tmp", "yoomclaw-file-input-tests"),
-  );
+  const reportRoot = args.reportDir;
   await fs.mkdir(reportRoot, { recursive: true });
   const runDir = await fs.mkdtemp(path.join(reportRoot, "ui-run-"));
   let electronApp;
+  let userDataDir;
   const errors = [];
   const startedAt = Date.now();
+  const testMarker = `[YC-E2E-${new Date(startedAt).toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}-${Math.random().toString(36).slice(2, 8)}] ${TEST_MARKER_PREFIX}`;
   const result = {
     id: "ui-smoke",
     status: "failed",
     liveChatRequests: UI_CHAT_REQUEST_LIMIT,
+    testMarker,
     inputFile: {
       fileName: inputFile.fileName,
       extension: inputFile.extension,
       sizeBytes: inputFile.sizeBytes,
+      inputRoot,
+      isolatedInputRoot: ownsInputRoot,
     },
     checks: {},
     durationMs: 0,
@@ -224,7 +270,7 @@ async function main() {
       process.platform === "win32" ? "electron.exe" : "electron",
     );
     await fs.access(electronPath);
-    const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "yoomclaw-ui-user-data-"));
+    userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "yoomclaw-ui-user-data-"));
     const electronArgs = [
       `--user-data-dir=${userDataDir}`,
       "--disable-gpu",
@@ -243,6 +289,9 @@ async function main() {
         YOOMCLAW_PROMPT_MODE: "provider",
         YOOMCLAW_AUTO_MEMORY_REVIEW: "false",
         YOOMCLAW_TOOLSETS: "vision",
+        YOOMCLAW_WORKSPACE: inputRoot,
+        YOOMCLAW_E2E_EXPORT_DIR: path.join(runDir, "exports"),
+        YOOMCLAW_E2E_LOG_DIR: path.join(runDir, "logs"),
       },
       timeout: 60_000,
     });
@@ -260,11 +309,11 @@ async function main() {
     });
 
     await waitForHttp("http://127.0.0.1:18789/api/health", 60_000);
-    await page.waitForSelector(".compose-bar", { timeout: 60_000 });
+    await page.getByTestId("compose-bar").waitFor({ state: "visible", timeout: 60_000 });
     await waitFor("Gateway WebSocket connection", async () => {
-      const input = page.locator(".compose-input");
+      const input = page.getByTestId("compose-input");
       if (await input.isEnabled()) return true;
-      const cta = page.locator(".empty-cta");
+      const cta = page.getByTestId("session-empty-cta");
       if (await cta.isVisible().catch(() => false)) await cta.click();
       return input.isEnabled();
     }, 60_000);
@@ -278,15 +327,15 @@ async function main() {
 
     const fileInput = page.locator('input[type="file"]');
     await fileInput.setInputFiles(inputFile.absolutePath);
-    await waitFor("file selection chip", async () => (await page.locator(".attach-chip").count()) === 1);
+    await waitFor("file selection chip", async () => (await page.getByTestId("attachment-chip").count()) === 1);
     result.checks.fileSelection = true;
-    await page.locator(".attach-remove").first().click();
+    await page.getByTestId("attachment-remove").first().click();
 
     const bytes = Array.from(await fs.readFile(inputFile.absolutePath));
     await page.evaluate(({ name, mimeType, bytes: fileBytes }) => {
       const dataTransfer = new DataTransfer();
       dataTransfer.items.add(new File([new Uint8Array(fileBytes)], name, { type: mimeType }));
-      const target = document.querySelector(".compose-bar");
+      const target = document.querySelector('[data-testid="compose-bar"]');
       if (!target) throw new Error("Compose bar not found for drag/drop test");
       for (const type of ["dragenter", "dragover", "drop"]) {
         target.dispatchEvent(new DragEvent(type, {
@@ -296,9 +345,9 @@ async function main() {
         }));
       }
     }, { name: inputFile.fileName, mimeType: inputFile.mimeType, bytes });
-    await waitFor("drag/drop chip", async () => (await page.locator(".attach-chip").count()) === 1);
+    await waitFor("drag/drop chip", async () => (await page.getByTestId("attachment-chip").count()) === 1);
     result.checks.dragAndDrop = true;
-    await page.locator(".attach-remove").first().click();
+    await page.getByTestId("attachment-remove").first().click();
 
     const rejectedVideoSize = await page.evaluate((maxBytes) => {
       const dataTransfer = new DataTransfer();
@@ -308,7 +357,7 @@ async function main() {
         { type: "video/mp4" },
       );
       dataTransfer.items.add(file);
-      const target = document.querySelector(".compose-bar");
+      const target = document.querySelector('[data-testid="compose-bar"]');
       if (!target) throw new Error("Compose bar not found for video size test");
       for (const type of ["dragenter", "dragover", "drop"]) {
         target.dispatchEvent(new DragEvent(type, {
@@ -320,9 +369,12 @@ async function main() {
       return file.size;
     }, MAX_VIDEO_UPLOAD_BYTES);
     await waitFor("frontend video size rejection", async () => {
-      if (await page.locator(".attach-chip").count() !== 0) return false;
+      if (await page.getByTestId("attachment-chip").count() !== 0) return false;
       const notice = page.locator(".attachment-notice");
-      return await notice.count() === 1 && (await notice.innerText()).includes("FILE_TOO_LARGE");
+      // The renderer intentionally presents a localized, user-facing message
+      // instead of exposing the internal rejection code. Assert the stable UI
+      // contract: the file is not attached and a non-empty notice is shown.
+      return await notice.count() === 1 && (await notice.innerText()).trim().length > 0;
     });
     result.checks.frontendVideoSizeLimit = {
       maxBytes: MAX_VIDEO_UPLOAD_BYTES,
@@ -332,39 +384,57 @@ async function main() {
     for (let index = 0; index < MAX_FILES_PER_MESSAGE + 1; index += 1) {
       await fileInput.setInputFiles(inputFile.absolutePath);
     }
-    await waitFor("10-file UI boundary", async () => (await page.locator(".attach-chip").count()) === MAX_FILES_PER_MESSAGE);
+    await waitFor("10-file UI boundary", async () => (await page.getByTestId("attachment-chip").count()) === MAX_FILES_PER_MESSAGE);
     const notice = page.locator(".attachment-notice");
     assert(await notice.count() === 1 && (await notice.innerText()).trim().length > 0, "11th file was not reported as rejected");
     result.checks.tenAcceptedElevenRejected = {
-      acceptedChips: await page.locator(".attach-chip").count(),
+      acceptedChips: await page.getByTestId("attachment-chip").count(),
       notice: (await notice.innerText()).trim(),
     };
-    while (await page.locator(".attach-remove").count() > 0) {
-      await page.locator(".attach-remove").first().click();
+    while (await page.getByTestId("attachment-remove").count() > 0) {
+      await page.getByTestId("attachment-remove").first().click();
     }
 
     const prompt = [
+      testMarker,
       "这是桌面端混合输入自动测试。",
       `请确认你已收到附件 ${inputFile.fileName}，只回复“收到：${inputFile.fileName}”，不要调用工具，不要返回空内容。`,
     ].join("\n");
+    const emptyCta = page.getByTestId("session-empty-cta");
+    if (await emptyCta.isVisible().catch(() => false)) {
+      await emptyCta.click();
+      await waitFor("new session creation", async () => (
+        !(await emptyCta.isVisible().catch(() => false))
+      ));
+    }
     await fileInput.setInputFiles(inputFile.absolutePath);
-    await page.locator(".compose-input").fill(prompt);
-    await page.locator(".send-btn").click();
+    await waitFor("single attachment after file-limit boundary", async () => (
+      (await page.getByTestId("attachment-chip").count()) === 1
+    ));
+    await page.getByTestId("compose-input").fill(prompt);
+    await waitFor("send enabled for mixed input", async () => (
+      await page.getByTestId("message-send").isEnabled()
+    ));
+    await page.getByTestId("message-send").click();
     await waitFor("completed mixed text and attachment response", async () => {
-      if (await page.locator(".send-btn").count() === 0) return false;
-      const assistantText = await page.locator(".row.assistant").allTextContents();
+      if (await page.getByTestId("message-send").count() === 0) return false;
+      const assistantText = await page.locator(".message-row.assistant").allTextContents();
       return assistantText.some((text) => text.trim().length > 0);
     }, TIMEOUT_MS);
     const bodyText = await page.locator("body").innerText();
-    const assistantText = (await page.locator(".row.assistant").allTextContents())
+    const assistantText = (await page.locator(".message-row.assistant").allTextContents())
       .map((text) => text.trim())
       .filter(Boolean)
       .join("\n");
     assert(bodyText.includes(inputFile.fileName), "Mixed-input user message did not retain the file name");
-    assert(assistantText.length > 0, "Mixed-input response was empty");
+    assert(
+      assistantText.includes(inputFile.fileName),
+      "Mixed-input response did not semantically acknowledge the attached filename",
+    );
     result.checks.mixedTextAndAttachment = {
       finalNonEmpty: true,
       fileNameVisible: true,
+      semanticMention: true,
       assistantTextLength: assistantText.length,
     };
     await page.screenshot({ path: path.join(runDir, "ui-final.png"), fullPage: true });
@@ -394,6 +464,8 @@ async function main() {
     }, null, 2), "utf8");
     await closeElectron(electronApp);
     if (renderer.child.exitCode === null) renderer.child.kill();
+    if (userDataDir && !args.keepArtifacts) await fs.rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+    if (ownsInputRoot && !args.keepArtifacts) await fs.rm(inputRoot, { recursive: true, force: true }).catch(() => {});
   }
 
   console.log(`UI file-input report: ${runDir}`);

@@ -3,7 +3,7 @@
  * 通过 contextBridge 暴露窗口控制 / 应用设置 / 通知 API
  * 渲染进程通过 window.yoomclaw 访问
  */
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // 只允许主进程通过这些频道推事件，避免渲染层被任意频道注入
 const ALLOWED_EVENTS = ["menu:new-chat", "menu:open-settings", "window:state"];
@@ -17,6 +17,18 @@ contextBridge.exposeInMainWorld("yoomclaw", {
   quit: () => ipcRenderer.invoke("quit"),
   isMaximized: () => ipcRenderer.invoke("window:is-maximized"),
   focusWindow: () => ipcRenderer.invoke("window:focus"),
+  // Electron 33 no longer exposes the legacy `File.path` property. Keep the
+  // native path available to the renderer for local file-operation requests.
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return "";
+    }
+  },
+  // Windows Explorer stores copied file paths in native clipboard formats;
+  // expose a read-only, paste-time fallback for renderer ClipboardEvents.
+  getClipboardFilePaths: () => ipcRenderer.invoke("clipboard:file-paths"),
 
   // 应用设置（持久化在主进程 userData/settings.json）
   getSettings: () => ipcRenderer.invoke("settings:get"),

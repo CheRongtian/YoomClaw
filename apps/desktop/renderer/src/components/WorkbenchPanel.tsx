@@ -108,7 +108,7 @@ function FileBrowser() {
     <section className="file-browser">
       <div className="section-head"><span className="section-title"><FolderIcon size={14} /><span>工作区文件</span></span><span className="section-count">{entries.length}</span></div>
       <div className="file-path-row">
-        <button type="button" className="file-back" disabled={relativePath === "."} onClick={() => setRelativePath(parentPath)} aria-label="返回上一级" title="返回上一级"><ChevronLeftIcon size={14} /></button>
+        <button type="button" className="file-back" data-testid="workbench-back" disabled={relativePath === "."} onClick={() => setRelativePath(parentPath)} aria-label="返回上一级" title="返回上一级"><ChevronLeftIcon size={14} /></button>
         <span title={relativePath}>{shortPath(relativePath)}</span>
       </div>
       {error && <div className="file-error">{error}</div>}
@@ -117,6 +117,7 @@ function FileBrowser() {
           <button
             type="button"
             className={`file-entry ${selectedPath === (relativePath === "." ? entry.name : `${relativePath}/${entry.name}`) ? "selected" : ""}`}
+            data-testid={`workbench-entry-${entry.name}`}
             key={entry.name}
             onClick={() => openEntry(entry)}
             aria-label={`${entry.type === "directory" ? "打开目录" : "预览文件"} ${entry.name}`}
@@ -303,7 +304,7 @@ export default function WorkbenchPanel({
           <div className="workbench-kicker">LOCAL TASK</div>
           <div className="workbench-title"><TaskIcon size={17} /><span>任务工作台</span></div>
         </div>
-        <button type="button" className="close-btn" onClick={onClose} aria-label="关闭任务工作台" title="关闭任务工作台"><CloseIcon size={15} /></button>
+        <button type="button" className="close-btn" data-testid="workbench-close" onClick={onClose} aria-label="关闭任务工作台" title="关闭任务工作台"><CloseIcon size={15} /></button>
       </div>
 
       <section className="task-card">
@@ -316,8 +317,8 @@ export default function WorkbenchPanel({
         <div className="workspace-path" title={workspace}>{shortPath(workspace || "未选择工作区")}</div>
       </section>
 
-        <FileBrowser key={workspace} />
-        <GitPanel key={workspace} />
+        <FileBrowser key={`file:${workspace}`} />
+        <GitPanel key={`git:${workspace}`} />
 
       <section className="section action-section">
         <div className="section-head"><span>本地操作</span><span className="section-count">安全入口</span></div>
@@ -325,6 +326,7 @@ export default function WorkbenchPanel({
           <button
             type="button"
             className="workbench-action primary"
+            data-testid="workbench-retry"
             disabled={!lastUserTask || streaming}
             onClick={onRetryTask}
             title="重新运行上一任务"
@@ -336,8 +338,10 @@ export default function WorkbenchPanel({
           <button
             type="button"
             className="workbench-action"
+            data-testid="workbench-copy"
             disabled={!workspace}
             onClick={() => void copyWorkspace()}
+            aria-label="复制工作区路径"
           >
             {copiedWorkspace ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
             <span>{copiedWorkspace ? "路径已复制" : "复制工作区路径"}</span>
@@ -399,7 +403,7 @@ export default function WorkbenchPanel({
         </section>
       )}
 
-      <button type="button" className="settings-link" onClick={onOpenSettings}><SettingsIcon size={14} /><span>打开工作区与 Agent 设置</span></button>
+      <button type="button" className="settings-link" data-testid="workbench-settings" onClick={onOpenSettings}><SettingsIcon size={14} /><span>打开工作区与 Agent 设置</span></button>
 
       <style jsx>{`
         .workbench-panel {

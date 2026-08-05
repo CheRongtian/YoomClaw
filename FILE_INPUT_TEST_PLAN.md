@@ -4,7 +4,7 @@
 
 验证桌面端、Gateway、Agent、Jimo Provider 在“文字 + 本地附件”场景下的统一行为。测试输入根目录默认是：
 
-`C:\Users\12992\Desktop\work`
+当前仓库目录（命令默认从仓库根目录执行）
 
 图床是受保护边界：测试可以验证图片经过现有图床链路，但不修改图床实现、配置或 API。
 
@@ -38,25 +38,25 @@ pnpm build
 
 ```powershell
 pnpm test:file-inputs -- --live `
-  --root C:\Users\12992\Desktop\work `
+  --root . `
   --max-requests 10 `
   --max-files 50 `
-  --report-dir C:\Users\12992\Desktop\work\tmp\yoomclaw-file-input-tests
+  --report-dir .tmp\yoomclaw-file-input-tests
 ```
 
 运行 Electron UI 真实冒烟：
 
 ```powershell
 pnpm test:file-inputs:ui -- --live `
-  --report-dir C:\Users\12992\Desktop\work\tmp\yoomclaw-file-input-tests
+  --report-dir .tmp\yoomclaw-file-input-tests
 ```
 
 在已登录并开启 Chrome CDP 后，使用指定的 UI-RPA 读取后台历史：
 
 ```powershell
-$env:NODE_PATH = 'C:\Users\12992\Desktop\work\code\YoomClaw\packages\agent-core\node_modules'
+$env:NODE_PATH = 'packages\agent-core\node_modules'
 pnpm test:file-inputs:history -- `
-  --live-report C:\Users\12992\Desktop\work\tmp\yoomclaw-file-input-tests\run-<id>\summary.json `
+  --live-report .tmp\yoomclaw-file-input-tests\run-<id>\summary.json `
   --cdp http://127.0.0.1:9222 `
   --max-records 20
 
@@ -71,7 +71,7 @@ pnpm test:file-inputs:history -- `
 - RPA gate: pending until a logged-in Chrome exposes CDP at `127.0.0.1:9222`.
 
 `test:file-inputs:history` 只调用用户提供的
-`C:\Users\12992\Desktop\work\code\web-automation\scripts\collect-jimo-history-rpa.mjs`，不会读取 Cookie、Token 或调用 Jimo 后台 API。
+用户提供的 `collect-jimo-history-rpa.mjs`，不会读取 Cookie、Token 或调用 Jimo 后台 API。
 
 ## 量化完成门槛
 

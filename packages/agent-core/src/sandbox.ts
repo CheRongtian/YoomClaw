@@ -18,7 +18,7 @@ export const MAX_FILE_BYTES = 1024 * 1024;
 export const BASH_TIMEOUT_MS = 30_000;
 
 /**
- * 绝对禁止触碰的目录（即使用户把 workspace 设成了它们）。
+ * 默认策略下绝对禁止触碰的目录（即使用户把 workspace 设成了它们）。
  * 用户主目录本身也在内 —— 只允许其下的具体子目录，不允许直接对家目录递归操作。
  */
 function forbiddenRoots(): string[] {
@@ -48,6 +48,11 @@ export interface SandboxResult {
   reason: string;
 }
 
+export interface SandboxOptions {
+  /** Full-access mode deliberately removes the app-level workspace boundary. */
+  allowOutsideWorkspace?: boolean;
+}
+
 /**
  * 校验目标路径是否落在 workspace 内。
  *
@@ -57,6 +62,7 @@ export interface SandboxResult {
 export function resolveInWorkspace(
   workspace: string,
   target: string,
+  options: SandboxOptions = {},
 ): SandboxResult {
   if (typeof target !== "string" || !target.trim()) {
     return { ok: false, resolved: "", reason: "路径不能为空" };
@@ -64,6 +70,10 @@ export function resolveInWorkspace(
 
   const root = path.resolve(workspace);
   const resolved = path.resolve(root, target);
+
+  if (options.allowOutsideWorkspace) {
+    return { ok: true, resolved, reason: "" };
+  }
 
   const rootCmp = process.platform === "win32" ? root.toLowerCase() : root;
   const resCmp =
@@ -148,12 +158,19 @@ export type CommandVerdict =
 /**
  * 判定一条 shell 命令的处置方式。
  *
- * 三档：白名单只读命令直接放行；明确破坏性的一律阻断；其余交给用户确认。
- * 宁可多问一次，也不要默认放行。
+ * 默认策略：白名单只读命令直接放行；明确破坏性的一律阻断；其余交给用户确认。
+ * 完全访问策略会由调用方显式传入 allowUnsafe，跳过这些应用层护栏。
  */
-export function judgeCommand(cmd: string): CommandVerdict {
+export interface CommandOptions {
+  /** Full-access mode deliberately removes the app-level command guardrails. */
+  allowUnsafe?: boolean;
+}
+
+export function judgeCommand(cmd: string, options: CommandOptions = {}): CommandVerdict {
   const trimmed = cmd.trim();
   if (!trimmed) return { action: "block", reason: "空命令" };
+
+  if (options.allowUnsafe) return { action: "allow", reason: "" };
 
   for (const { re, why } of HARD_BLOCKED_PATTERNS) {
     if (re.test(trimmed)) {

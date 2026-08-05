@@ -1,5 +1,5 @@
-import type { ChatMessage, SkillSummary, ToolDefinition } from "@yoomclaw/protocol";
-import { buildToolPrompt, buildToolResultPrompt } from "./react.js";
+import type { ChatMessage, SafetyMode, SkillSummary, ToolDefinition } from "@yoomclaw/protocol";
+import { buildSafetyPrompt, buildToolPrompt, buildToolResultPrompt } from "./react.js";
 
 export interface PromptContext {
   globalPrompt: string;
@@ -9,6 +9,7 @@ export interface PromptContext {
   enabledTools: ToolDefinition[];
   skillIndex: SkillSummary[];
   userMessage: ChatMessage;
+  safetyMode?: SafetyMode;
 }
 export interface ToolResultPromptInput {
   toolName: string;
@@ -45,6 +46,8 @@ export class HermesPromptAssembler implements PromptAssembler {
       "",
       "## 当前项目规则",
       context.projectPrompt.trim() || "（当前项目没有额外规则）",
+      "",
+      buildSafetyPrompt(context.safetyMode),
       "",
       buildToolPrompt(context.enabledTools),
       "",

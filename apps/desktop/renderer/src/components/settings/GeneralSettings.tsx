@@ -2,14 +2,8 @@ import { useAppSettings } from "../../hooks/useAppSettings";
 import type { AppSettings } from "../../types";
 import { SettingBlock, SettingRow, Segmented, Toggle } from "./controls";
 
-const ZOOM_OPTIONS: { value: number; label: string }[] = [
-  { value: 0.75, label: "75%" },
-  { value: 0.9, label: "90%" },
-  { value: 1, label: "100%" },
-  { value: 1.1, label: "110%" },
-  { value: 1.25, label: "125%" },
-  { value: 1.5, label: "150%" },
-];
+const ZOOM_MIN_PERCENT = 75;
+const ZOOM_MAX_PERCENT = 150;
 
 /** 通用设置：窗口行为 / 启动 / 通知 / 缩放 —— 全部持久化在主进程 */
 export default function GeneralSettings() {
@@ -122,12 +116,32 @@ export default function GeneralSettings() {
       />
 
       <SettingBlock label="界面缩放" hint="调整整个界面的显示比例">
-        <Segmented<number>
-          compact
-          value={settings.zoomFactor}
-          onChange={(v) => update({ zoomFactor: v })}
-          options={ZOOM_OPTIONS}
-        />
+        <div className="zoom-control">
+          <div className="zoom-control-top">
+            <output className="zoom-value" htmlFor="setting-zoom-slider">
+              {Math.round(settings.zoomFactor * 100)}%
+            </output>
+          </div>
+          <div className="zoom-slider-wrap">
+            <input
+              id="setting-zoom-slider"
+              className="zoom-slider"
+              data-testid="setting-zoom-slider"
+              type="range"
+              min={ZOOM_MIN_PERCENT}
+              max={ZOOM_MAX_PERCENT}
+              step={1}
+              value={Math.round(settings.zoomFactor * 100)}
+              onChange={(event) => update({ zoomFactor: Number(event.currentTarget.value) / 100 })}
+              aria-label="界面缩放"
+              aria-valuetext={`${Math.round(settings.zoomFactor * 100)}%`}
+            />
+          </div>
+          <div className="zoom-scale" aria-hidden="true">
+            <span>{ZOOM_MIN_PERCENT}%</span>
+            <span>{ZOOM_MAX_PERCENT}%</span>
+          </div>
+        </div>
       </SettingBlock>
 
       <style jsx>{`
@@ -141,6 +155,88 @@ export default function GeneralSettings() {
         }
         .grp-title:first-child {
           margin-top: 0;
+        }
+        .zoom-control {
+          width: 100%;
+        }
+        .zoom-control-top {
+          display: flex;
+          justify-content: flex-end;
+          margin-bottom: 8px;
+        }
+        .zoom-value {
+          min-width: 48px;
+          padding: 3px 8px;
+          border: 1px solid var(--border-active);
+          border-radius: 6px;
+          color: var(--text);
+          background: var(--bg-element);
+          font-size: 12px;
+          font-variant-numeric: tabular-nums;
+          text-align: center;
+        }
+        .zoom-slider-wrap {
+          width: 100%;
+          height: 17px;
+          display: flex;
+          align-items: center;
+        }
+        .zoom-slider {
+          display: block;
+          width: 100%;
+          height: 17px;
+          margin: 0;
+          appearance: none;
+          outline: none;
+          background: transparent;
+          cursor: pointer;
+        }
+        .zoom-slider::-webkit-slider-runnable-track {
+          box-sizing: border-box;
+          height: 4px;
+          border: 1px solid var(--border-active);
+          border-radius: 999px;
+          background: var(--border-active);
+          box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-panel) 70%, transparent);
+        }
+        .zoom-slider::-moz-range-track {
+          box-sizing: border-box;
+          height: 4px;
+          border: 1px solid var(--border-active);
+          border-radius: 999px;
+          background: var(--border-active);
+          box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-panel) 70%, transparent);
+        }
+        .zoom-slider::-webkit-slider-thumb {
+          box-sizing: border-box;
+          width: 17px;
+          height: 17px;
+          margin-top: -7px;
+          appearance: none;
+          border: 2px solid var(--bg-panel);
+          border-radius: 50%;
+          background: var(--primary);
+          box-shadow: 0 0 0 1px var(--primary);
+        }
+        .zoom-slider::-moz-range-thumb {
+          box-sizing: border-box;
+          width: 17px;
+          height: 17px;
+          border: 2px solid var(--bg-panel);
+          border-radius: 50%;
+          background: var(--primary);
+          box-shadow: 0 0 0 1px var(--primary);
+        }
+        .zoom-slider:focus-visible {
+          box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 24%, transparent);
+        }
+        .zoom-scale {
+          display: flex;
+          justify-content: space-between;
+          margin-top: 7px;
+          color: var(--text-muted);
+          font-size: 11px;
+          font-variant-numeric: tabular-nums;
         }
       `}</style>
     </>

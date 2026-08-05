@@ -59,6 +59,46 @@ test("Jimo SSE parser handles CRLF, split chunks and malformed JSON", async () =
   }
 });
 
+test("Jimo chat folds trusted prompt text parts before a file attachment", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody = "";
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = String(init?.body ?? "");
+    return sseResponse(["event: end\ndata: {}\n\n"]);
+  }) as typeof fetch;
+
+  try {
+    const provider = new JimoProvider({
+      baseUrl: "https://example.test",
+      shareId: "share",
+      authorization: "token",
+    });
+    for await (const _chunk of provider.chat({
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "tool prompt" },
+          { type: "text", text: "safety prompt" },
+          { type: "text", text: "user task" },
+          { type: "file_url", file_url: { url: "data:text/plain;base64,QQ==", fileId: "a.txt" } },
+        ],
+      }],
+      sessionId: "fold-test",
+      source: "api",
+      extra: {},
+    })) {
+      void _chunk;
+    }
+    const body = JSON.parse(requestBody) as {
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    assert.deepEqual(body.messages[0].content.map((part) => part.type), ["text", "file_url"]);
+    assert.equal(body.messages[0].content[0].text, "tool prompt\n\nsafety prompt\n\nuser task");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("vision provider uses its own Jimo share and session namespace", async () => {
   const originalFetch = globalThis.fetch;
   let requestedUrl = "";

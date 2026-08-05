@@ -11,6 +11,7 @@ test("workspace paths reject traversal and credential files", () => {
   assert.equal(resolveInWorkspace(workspace, ".env").ok, false);
   assert.equal(resolveInWorkspace(workspace, ".env.example").ok, true);
   assert.equal(resolveInWorkspace(workspace, ".ssh/id_rsa").ok, false);
+  assert.equal(resolveInWorkspace(workspace, "../../outside.txt", { allowOutsideWorkspace: true }).ok, true);
 });
 
 test("command safety distinguishes read-only, confirm and blocked commands", () => {
@@ -24,4 +25,6 @@ test("command safety distinguishes read-only, confirm and blocked commands", () 
   assert.equal(judgeCommand("reg add HKCU\\Software\\YoomClaw").action, "block");
   assert.equal(judgeCommand("cd ..\\secrets").action, "block");
   assert.equal(judgeCommand("format C:").action, "block");
+  assert.equal(judgeCommand("format C:", { allowUnsafe: true }).action, "allow");
+  assert.equal(judgeCommand("cat .env", { allowUnsafe: true }).action, "allow");
 });

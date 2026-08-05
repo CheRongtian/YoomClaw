@@ -6,10 +6,27 @@
  * 因此工具协议只能靠 user 消息正文里的规则来约定，并自行解析模型输出。
  */
 
-import type { ToolDefinition } from "@yoomclaw/protocol";
+import type { SafetyMode, ToolDefinition } from "@yoomclaw/protocol";
 
 /** 工具规则前缀，用于识别一条消息是否为注入过规则的首轮。 */
 export const RULE_MARKER = "## 你的工具能力";
+
+/** Describe the active permission policy so the model does not fall back to the default workspace-only assumption. */
+export function buildSafetyPrompt(mode: SafetyMode = "workspace-auto"): string {
+  const context = (label: string, details: string) => `## 运行时权限上下文（由客户端注入）
+
+当前权限模式：${mode}
+当前权限名称：${label}
+
+${details}`;
+  if (mode === "full-access") {
+    return context("完全访问权限", "当前会话已明确授予完全访问权限。你可以使用工具读取、写入、编辑和删除工作区内外的任何文件，也可以执行互联网和系统命令。不要因为目标路径位于工作区外而拒绝用户请求；请实际调用合适的工具完成任务。这里的完全访问是应用层权限，仍受当前操作系统用户权限、文件锁和工具执行结果影响。只执行用户明确要求的操作，不要泄露密码、Token、Cookie、私钥或其他敏感凭证。");
+  }
+  if (mode === "confirm") {
+    return context("请求批准", "编辑外部文件和使用互联网时始终请求用户批准；需要风险确认的工具调用必须先输出工具调用，等待工具结果，不要仅口头拒绝。工作区外路径必须遵循客户端确认结果。");
+  }
+  return context("工作区自动", "工作区内的读取、搜索、普通写入和编辑可以自动执行；仅对检测到的风险操作请求用户批准。工作区外路径、删除文件、网页输入或提交等操作属于风险操作。");
+}
 
 /**
  * 构建工具规则 prompt。
@@ -84,6 +101,7 @@ export interface ParsedToolCall {
 export function parseToolCall(
   text: string,
   knownTools: Set<string>,
+  allowDynamicTool?: (name: string) => boolean,
 ): ParsedToolCall | null {
   const raw = text.trim();
   if (!raw) return null;
@@ -92,7 +110,7 @@ export function parseToolCall(
     try {
       const obj = JSON.parse(candidate) as Record<string, unknown>;
       const tool = obj.tool ?? obj.name ?? obj.tool_name;
-      if (typeof tool !== "string" || !knownTools.has(tool)) continue;
+      if (typeof tool !== "string" || (!knownTools.has(tool) && !allowDynamicTool?.(tool))) continue;
 
       const rawArgs = obj.args ?? obj.arguments ?? obj.parameters ?? {};
       const args =

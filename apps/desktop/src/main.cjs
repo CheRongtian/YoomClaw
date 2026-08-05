@@ -21,11 +21,13 @@ const {
   Notification,
   ipcMain,
   dialog,
+  clipboard,
 } = require("electron");
 const nodePath = require("node:path");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const settingsStore = require("./settings.cjs");
+const { readClipboardFilePaths } = require("./clipboard.cjs");
 
 // 单实例锁
 const gotLock = app.requestSingleInstanceLock();
@@ -45,6 +47,14 @@ let windowSizeSaveTimer = null;
 
 // 仓库根目录（apps/desktop/src -> YoomClaw/）
 const ROOT = nodePath.resolve(__dirname, "..", "..", "..");
+const E2E_LOG_DIR = process.env.YOOMCLAW_E2E_LOG_DIR;
+const E2E_LOG_PATH = E2E_LOG_DIR ? nodePath.join(E2E_LOG_DIR, "electron.log") : null;
+if (E2E_LOG_DIR) {
+  try {
+    fs.mkdirSync(E2E_LOG_DIR, { recursive: true });
+    fs.appendFileSync(E2E_LOG_PATH, `[${new Date().toISOString()}] Electron main process started\n`, "utf8");
+  } catch {}
+}
 
 // 开发模式：未打包时视为 dev（Electron 从源码启动时 isPackaged=false）
 const isDev = !app.isPackaged;
@@ -78,7 +88,10 @@ function startGateway() {
   }
 
   const envFile = nodePath.join(ROOT, ".env");
-  const workspace = settingsStore.load().workspace || ROOT;
+  const workspace = settingsStore.load().workspace
+    || process.env.YOOMCLAW_WORKSPACE
+    || process.env.CLAW_WORKSPACE
+    || ROOT;
   const dataDir = nodePath.join(app.getPath("userData"), "YoomClaw");
   const args = [
     ...(fs.existsSync(envFile) ? ["--env-file=" + envFile] : []),
@@ -92,13 +105,25 @@ function startGateway() {
     YOOMCLAW_DATA_DIR: dataDir,
   };
 
+  const e2eLogDir = E2E_LOG_DIR;
+  const gatewayLogPath = e2eLogDir ? nodePath.join(e2eLogDir, "gateway.log") : null;
+  if (e2eLogDir) fs.mkdirSync(e2eLogDir, { recursive: true });
+  const appendGatewayLog = (chunk) => {
+    if (!gatewayLogPath) return;
+    try { fs.appendFileSync(gatewayLogPath, String(chunk), "utf8"); } catch {}
+  };
+
   console.log("[Gateway] 启动子进程:", "node", args.join(" "));
   gatewayChild = spawn("node", args, {
     cwd: ROOT,
-    stdio: "inherit",
+    stdio: e2eLogDir ? ["ignore", "pipe", "pipe"] : "inherit",
     env: gatewayEnv,
     windowsHide: true,
   });
+  if (e2eLogDir) {
+    gatewayChild.stdout?.on("data", appendGatewayLog);
+    gatewayChild.stderr?.on("data", appendGatewayLog);
+  }
 
   gatewayChild.on("error", (err) => {
     console.error("[Gateway] 子进程启动失败:", err.message);
@@ -437,6 +462,11 @@ ipcMain.handle("window:is-maximized", async () => {
   return mainWindow ? mainWindow.isMaximized() : false;
 });
 
+// Explorer keeps copied files in native clipboard formats instead of always
+// exposing their paths through the renderer's ClipboardEvent. Read those
+// formats in the main process so pasted image attachments retain their path.
+ipcMain.handle("clipboard:file-paths", async () => readClipboardFilePaths(clipboard));
+
 // ===== 应用设置 =====
 
 ipcMain.handle("settings:get", async () => settingsStore.load());
@@ -486,6 +516,15 @@ ipcMain.handle("file:save-text", async (_evt, payload) => {
   }
   const requestedName = typeof payload.fileName === "string" ? payload.fileName : "yoomclaw-session.md";
   const safeName = nodePath.basename(requestedName).replace(/[<>:"/\\|?*\x00-\x1F]/g, "-") || "yoomclaw-session.md";
+  const e2eExportDir = process.env.YOOMCLAW_E2E_EXPORT_DIR?.trim();
+  if (e2eExportDir) {
+    // Test-only deterministic export path. The directory is supplied by the
+    // isolated E2E harness; production runs never set this variable.
+    await fs.promises.mkdir(e2eExportDir, { recursive: true });
+    const exportPath = nodePath.join(e2eExportDir, safeName.endsWith(".md") ? safeName : `${safeName}.md`);
+    await fs.promises.writeFile(exportPath, payload.content, "utf8");
+    return exportPath;
+  }
   const result = await dialog.showSaveDialog(mainWindow, {
     title: "导出当前对话",
     defaultPath: nodePath.join(app.getPath("downloads"), safeName.endsWith(".md") ? safeName : `${safeName}.md`),

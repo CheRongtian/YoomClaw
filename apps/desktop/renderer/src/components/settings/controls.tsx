@@ -112,6 +112,7 @@ export function Toggle({
   return (
     <button
       className={`toggle ${checked ? "on" : ""}`}
+      data-testid={`setting-toggle-${label}`}
       role="switch"
       aria-checked={checked}
       aria-label={label}
@@ -174,6 +175,7 @@ export function Segmented<T extends string | number>({
         <button
           key={String(o.value)}
           className={`seg-opt ${o.value === value ? "active" : ""}`}
+          data-testid={`setting-option-${String(o.value)}`}
           onClick={() => onChange(o.value)}
           title={o.hint}
         >

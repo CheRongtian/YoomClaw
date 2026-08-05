@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { classifyFileInput, FILE_INPUT_RULES, MAX_FILES_PER_MESSAGE } from "../packages/protocol/src/file-policy.js";
 import type { FileInputDescriptor, FileInputKind } from "../packages/protocol/src/file-policy.js";
 
-const DEFAULT_ROOT = "C:\\Users\\12992\\Desktop\\work";
 const DEFAULT_MAX_REQUESTS = 10;
 const DEFAULT_MAX_FILES = 50;
 const CASE_TIMEOUT_MS = 180_000;
@@ -36,6 +36,7 @@ const SKIPPED_DIRECTORIES = new Set([
 
 interface CliOptions {
   root: string;
+  rootProvided: boolean;
   gatewayUrl?: string;
   reportDir: string;
   maxRequests: number;
@@ -58,7 +59,7 @@ interface DiscoveredFile {
 interface CaseResult {
   id: string;
   files: string[];
-  status: "passed" | "failed" | "blocked" | "rejected";
+  status: "passed" | "failed" | "blocked" | "skipped";
   stage: string;
   durationMs: number;
   details: Record<string, unknown>;
@@ -90,12 +91,12 @@ function parseArgs(argv: string[]): CliOptions {
     else if (argv[index + 1] && !argv[index + 1].startsWith("--")) values.set(key, argv[++index]);
     else flags.add(key);
   }
-  const root = path.resolve(values.get("root") ?? DEFAULT_ROOT);
-  const reportDir = path.resolve(
-    values.get("report-dir") ?? path.join(root, "tmp", "yoomclaw-file-input-tests"),
-  );
+  const rootValue = values.get("root");
+  const root = rootValue ? path.resolve(rootValue) : "";
+  const reportDir = path.resolve(values.get("report-dir") ?? path.join(".tmp", "yoomclaw-file-input-tests"));
   return {
     root,
+    rootProvided: Boolean(rootValue),
     gatewayUrl: values.get("gateway-url")?.replace(/\/$/, ""),
     reportDir,
     maxRequests: Math.min(
@@ -109,6 +110,21 @@ function parseArgs(argv: string[]): CliOptions {
     live: flags.has("live") || flags.has("confirm-live"),
     caseId: values.get("case-id"),
   };
+}
+
+async function createFixtureRoot(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "yoomclaw-file-input-live-"));
+  await fs.mkdir(path.join(root, "中文目录"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, "中文目录", "测试说明.md"),
+    "# YoomClaw 文件输入回归\n\n这是隔离临时工作区中的中文 Markdown 文件。\n",
+    "utf8",
+  );
+  await fs.writeFile(path.join(root, "数据.json"), JSON.stringify({ name: "中文数据", value: 42 }, null, 2), "utf8");
+  await fs.writeFile(path.join(root, "表格.csv"), "名称,数值\n中文,42\n", "utf8");
+  await fs.writeFile(path.join(root, "页面.html"), "<html><head><script>ignore()</script></head><body>中文正文</body></html>", "utf8");
+  await fs.writeFile(path.join(root, ".env.test"), "E2E_SECRET_MARKER=must-not-be-read\n", "utf8");
+  return root;
 }
 
 function isSensitiveFile(fileName: string, relativePath: string): boolean {
@@ -649,7 +665,7 @@ async function runBatchCase(
     const finalText = run.finalText.trim();
     const mentionsFile = batch.some((file) => finalText.includes(file.fileName) || finalText.includes(file.descriptor.extension));
     const passed = run.status === "completed" && !run.error && finalText.length > 0 &&
-      !contextLeaked && unexpected.length === 0;
+      mentionsFile && !contextLeaked && unexpected.length === 0;
     return {
       id,
       files: batch.map((file) => file.relativePath),
@@ -736,7 +752,7 @@ async function writeReports(
       passed: cases.filter((item) => item.status === "passed").length,
       failed: cases.filter((item) => item.status === "failed").length,
       blocked: cases.filter((item) => item.status === "blocked").length,
-      rejected: cases.filter((item) => item.status === "rejected").length,
+      skipped: cases.filter((item) => item.status === "skipped").length,
       discoveredAcceptedExtensions: [...discoveredAcceptedExtensions].sort(),
       selectedAcceptedExtensions: [...selectedAcceptedExtensions].sort(),
       coveredAcceptedExtensions: coveredExtensions.sort(),
@@ -752,9 +768,11 @@ async function writeReports(
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  const ownsRoot = !options.rootProvided;
   if (!options.live) {
     throw new Error("真实链路测试需要显式传入 --live；它会调用 Jimo，并可能产生新的图床上传对象。");
   }
+  if (ownsRoot) options.root = await createFixtureRoot();
   await fs.access(options.root);
   await fs.mkdir(options.reportDir, { recursive: true });
   const allFiles = await walkFiles(options.root);
@@ -780,7 +798,7 @@ async function main(): Promise<void> {
       cases.push({
         id: "selection-cap",
         files: selectedFiles.slice(maxBatches * MAX_FILES_PER_MESSAGE).map((file) => file.relativePath),
-        status: "rejected",
+        status: "skipped",
         stage: "test-budget",
         durationMs: 0,
         details: { reason: "Live request cap reached" },
@@ -789,6 +807,7 @@ async function main(): Promise<void> {
   } finally {
     await writeReports(options, allFiles, selectedFiles, cases, gateway);
     await stopGateway(gateway);
+    if (ownsRoot) await fs.rm(options.root, { recursive: true, force: true }).catch(() => {});
   }
   const failed = cases.filter((item) => item.status === "failed" || item.status === "blocked");
   if (failed.length > 0) process.exitCode = 1;

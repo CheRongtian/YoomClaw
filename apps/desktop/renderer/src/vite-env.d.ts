@@ -20,6 +20,8 @@ export interface YoomClawApi {
   quit(): void;
   isMaximized(): Promise<boolean>;
   focusWindow(): Promise<void>;
+  getPathForFile(file: File): string;
+  getClipboardFilePaths(): Promise<string[]>;
 
   getSettings(): Promise<AppSettings>;
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;

@@ -11,8 +11,9 @@
  *   DELETE /api/sessions/:id            - Delete session
  *   POST /api/sessions/:id/messages     - Send message (SSE streaming AgentEvent)
  *   POST /api/upload/file               - Upload file (proxied to LLM provider)
-  *   POST /api/files/read-pdf             - Extract PDF text locally
-  *   GET  /api/tools                     - List builtin tool definitions
+ *   POST /api/files/read-pdf            - Extract PDF text locally
+ *   POST /api/files/read-local          - Resolve an explicitly supplied local media path
+ *   GET  /api/tools                     - List builtin tool definitions
  *   GET  /api/workspace/tree             - List safe workspace entries
  *   GET  /api/workspace/file             - Read a safe text workspace file
  *   GET  /api/workspace/git              - Read-only Git status and diff snapshot
@@ -24,6 +25,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import pathModule from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
@@ -40,6 +42,10 @@ import {
   resolveInWorkspace,
   type BuiltinTool,
   type ConfirmFn,
+  type ToolServices,
+  type SubagentRequest,
+  type SubagentResult,
+  type ToolServiceContext,
 } from "@yoomclaw/agent-core";
 import {
   ImageHostClient,
@@ -57,8 +63,10 @@ import {
 import {
   classifyFileInput,
   countAttachmentParts,
+  countImageAttachmentParts,
   FILE_INPUT_RULES,
   MAX_FILES_PER_MESSAGE,
+  MAX_IMAGES_PER_MESSAGE,
 } from "@yoomclaw/protocol";
 import type {
   ChatMessage,
@@ -66,13 +74,17 @@ import type {
   GatewayMessage,
   FileUploadRequest,
   FileUploadResponse,
+  LocalFileReadResponse,
   PdfReadResponse,
   FileInputDescriptor,
   AgentEvent,
   RuntimeConfig,
+  SafetyMode,
   SessionRunStatus,
+  ToolsetId,
 } from "@yoomclaw/protocol";
 import type { AgentConfig } from "@yoomclaw/protocol";
+import { AttachmentStore, createDocumentService, createHttpMcpService, createVisionService } from "./advanced-services.js";
 
 // ===== Gateway Config =====
 
@@ -117,6 +129,13 @@ interface ActiveRun {
   controller: AbortController;
 }
 
+function normalizeSafetyMode(value: unknown): SafetyMode | undefined {
+  if (value === "confirm") return "confirm";
+  if (value === "workspace-auto" || value === "no-confirm") return "workspace-auto";
+  if (value === "full-access") return "full-access";
+  return undefined;
+}
+
 export class Gateway {
   private httpServer: http.Server;
   private wsServer: WebSocketServer;
@@ -131,10 +150,12 @@ export class Gateway {
   private browser: ChromeCdpController;
   private imageHost?: ImageHostClient;
   private pdfReader: LocalPdfReader;
+  private attachments: AttachmentStore;
+  private activeSubagents = 0;
   /** callId → 等待用户确认的裁决。 */
   private pendingConfirm = new Map<string, PendingConfirm>();
-  /** 兼容旧客户端的确认模式状态；高风险确认不会被该开关绕过。 */
-  private confirmModes = new Map<WebSocket, "confirm" | "no-confirm">();
+  /** 兼容旧客户端的确认模式消息；旧的 no-confirm 会归一化为 workspace-auto。 */
+  private confirmModes = new Map<WebSocket, SafetyMode>();
   private activeRuns = new Map<string, ActiveRun>();
 
   private abortRunsForSession(sessionId: string): void {
@@ -142,6 +163,89 @@ export class Gateway {
       if (active.sessionId !== sessionId) continue;
       active.controller.abort();
       this.activeRuns.delete(runId);
+    }
+  }
+
+  private async runSubagent(
+    request: SubagentRequest,
+    context: ToolServiceContext,
+  ): Promise<SubagentResult> {
+    if (this.activeSubagents >= 2) {
+      return {
+        taskId: randomUUID(),
+        status: "failed",
+        summary: "当前最多同时运行 2 个子 Agent，请稍后重试。",
+      };
+    }
+    const parent = this.sessions.get(context.sessionId);
+    const depth = typeof parent?.meta?.subagentDepth === "number" ? parent.meta.subagentDepth : 0;
+    if (depth >= 2) {
+      return {
+        taskId: randomUUID(),
+        status: "failed",
+        summary: "已达到子 Agent 最大嵌套深度。",
+      };
+    }
+    // In confirm mode a child would need an additional UI event channel. Do not
+    // silently downgrade the permission mode; ask the parent to retry in a mode
+    // that can execute inherited safe/workspace operations automatically.
+    if (context.safetyMode === "confirm") {
+      return {
+        taskId: randomUUID(),
+        status: "failed",
+        summary: "子 Agent 在‘请求批准’模式下需要独立确认通道，请切换到工作区自动或完全访问权限。",
+      };
+    }
+    this.activeSubagents += 1;
+    const child = this.sessions.create(`子 Agent：${request.task.slice(0, 60)}`);
+    const childDepth = depth + 1;
+    this.sessions.setFlags(child.id, { archived: true });
+    this.sessions.setMeta(child.id, {
+      parentSessionId: context.sessionId,
+      subagentDepth: childDepth,
+    });
+    let finalText = "";
+    const errors: string[] = [];
+    const supportedToolsets: ToolsetId[] = [
+      "coding", "memory", "skills", "browser", "vision", "planning", "web",
+      "execution", "orchestration", "mcp", "computer",
+    ];
+    const inheritedToolsets = this.agent.config.toolsets ?? this.runtime.toolsets;
+    const requestedToolsets = request.toolsets?.filter(
+      (value): value is ToolsetId => supportedToolsets.includes(value as ToolsetId),
+    );
+    const childToolsets = (requestedToolsets && requestedToolsets.length > 0
+      ? requestedToolsets
+      : inheritedToolsets
+    ).filter((value) => inheritedToolsets.includes(value));
+    try {
+      for await (const event of this.agent.run(child.id, request.task, {
+        signal: context.signal,
+        safetyMode: context.safetyMode,
+        toolsets: childToolsets,
+        runId: randomUUID(),
+      })) {
+        if (event.type === "final") finalText = event.text;
+        if (event.type === "error") errors.push(event.message);
+      }
+      if (context.signal?.aborted) {
+        return { taskId: child.id, status: "cancelled", summary: "子 Agent 已取消。" };
+      }
+      if (errors.length > 0) {
+        return { taskId: child.id, status: "failed", summary: errors.join("\n") };
+      }
+      const files = [...finalText.matchAll(/(?:^|\s)((?:[A-Za-z]:[\\/]|\.\.?[\\/])[^\s`"']+)/g)]
+        .map((match) => match[1])
+        .slice(0, 50);
+      return { taskId: child.id, status: "completed", summary: finalText || "子 Agent 已完成但没有返回文本。", files };
+    } catch (error) {
+      return {
+        taskId: child.id,
+        status: context.signal?.aborted ? "cancelled" : "failed",
+        summary: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      this.activeSubagents = Math.max(0, this.activeSubagents - 1);
     }
   }
 
@@ -164,6 +268,7 @@ export class Gateway {
       this.runtime.workspace,
     );
     this.tools = BUILTIN_TOOLS;
+    this.attachments = new AttachmentStore();
 
     const provider = new JimoProvider(config.jimoConfig);
     const visionConfig = config.visionConfig ?? readVisionConfig(process.env);
@@ -177,6 +282,23 @@ export class Gateway {
     const vision = visionConfig?.shareId && visionConfig.authorization
       ? new JimoVisionProvider(visionConfig)
       : undefined;
+    const services: ToolServices = {
+      planStore: {
+        get: (sessionId) => {
+          const plan = this.sessions.get(sessionId)?.meta?.plan;
+          return plan && typeof plan === "object" ? plan as import("@yoomclaw/protocol").PlanState : undefined;
+        },
+        set: (sessionId, plan) => {
+          this.sessions.setMeta(sessionId, { plan });
+        },
+      },
+      vision: createVisionService(vision, this.attachments),
+      documents: createDocumentService(this.pdfReader, this.attachments),
+      subagents: {
+        delegate: (request, context) => this.runSubagent(request, context),
+      },
+      mcp: createHttpMcpService(),
+    };
     this.agent = new Agent(
       {
         ...config.agentConfig,
@@ -197,6 +319,7 @@ export class Gateway {
         skillStore: this.skillStore,
         browser: this.browser,
         vision,
+        services,
       },
     );
 
@@ -461,13 +584,24 @@ export class Gateway {
         return this.handleReadPdf(req, res, url.searchParams.get("fileName"));
       }
 
+      if (path === "/api/files/read-local" && req.method === "POST") {
+        return this.handleReadLocalFile(req, res);
+      }
+
       if (path === "/api/tools" && req.method === "GET") {
-        return this.sendJson(res, 200, this.tools.map((t) => t.definition));
+        const enabledToolsets = this.agent.config.toolsets ?? this.runtime.toolsets;
+        const enabledNames = this.agent.config.enabledTools;
+        return this.sendJson(res, 200, this.tools
+          .filter((tool) => !enabledNames || enabledNames.includes(tool.definition.name))
+          .filter((tool) => enabledToolsets.includes(tool.definition.toolset ?? "coding"))
+          .map((tool) => tool.definition));
       }
 
       if (path === "/api/workspace/tree" && req.method === "GET") {
         const relativePath = url.searchParams.get("path") ?? ".";
-        const resolved = resolveInWorkspace(this.runtime.workspace, relativePath);
+        const resolved = resolveInWorkspace(this.runtime.workspace, relativePath, {
+          allowOutsideWorkspace: this.runtime.safetyMode === "full-access",
+        });
         if (!resolved.ok) return this.sendJson(res, 403, { error: resolved.reason, code: "WORKSPACE_PATH_BLOCKED" });
         try {
           const stat = fs.statSync(resolved.resolved);
@@ -492,7 +626,9 @@ export class Gateway {
 
       if (path === "/api/workspace/file" && req.method === "GET") {
         const relativePath = url.searchParams.get("path") ?? "";
-        const resolved = resolveInWorkspace(this.runtime.workspace, relativePath);
+        const resolved = resolveInWorkspace(this.runtime.workspace, relativePath, {
+          allowOutsideWorkspace: this.runtime.safetyMode === "full-access",
+        });
         if (!resolved.ok) return this.sendJson(res, 403, { error: resolved.reason, code: "WORKSPACE_PATH_BLOCKED" });
         try {
           const stat = fs.statSync(resolved.resolved);
@@ -508,7 +644,9 @@ export class Gateway {
       }
 
       if (path === "/api/workspace/git" && req.method === "GET") {
-        const resolved = resolveInWorkspace(this.runtime.workspace, ".");
+        const resolved = resolveInWorkspace(this.runtime.workspace, ".", {
+          allowOutsideWorkspace: this.runtime.safetyMode === "full-access",
+        });
         if (!resolved.ok) return this.sendJson(res, 403, { error: resolved.reason, code: "WORKSPACE_PATH_BLOCKED" });
         const runGit = (args: string[]): string => execFileSync("git", args, {
           cwd: resolved.resolved,
@@ -569,16 +707,23 @@ export class Gateway {
         code: "INVALID_MESSAGE_CONTENT",
       });
     }
-    const providerContent = body.agentContext ?? body.content;
+   const providerContent = body.agentContext ?? body.content;
+    if (countImageAttachmentParts(providerContent) > MAX_IMAGES_PER_MESSAGE) {
+     return this.sendJson(res, 400, {
+        error: `A message may contain at most ${MAX_IMAGES_PER_MESSAGE} images`,
+        code: "TOO_MANY_IMAGES",
+     });
+   }
     if (countAttachmentParts(providerContent) > MAX_FILES_PER_MESSAGE) {
-      return this.sendJson(res, 400, {
+     return this.sendJson(res, 400, {
         error: `A message may contain at most ${MAX_FILES_PER_MESSAGE} files`,
         code: "TOO_MANY_FILES",
-      });
-    }
+     });
+   }
     const message: ChatMessage = {
       role: body.role ?? "user",
       content: body.content,
+      ...(Array.isArray(body.localPaths) ? { localPaths: body.localPaths } : {}),
       ...(body.agentContext === undefined ? {} : { agentContext: body.agentContext }),
     };
 
@@ -600,7 +745,10 @@ export class Gateway {
     req.on("close", () => ac.abort());
 
     try {
-      for await (const ev of this.agent.run(sessionId, message, { signal: ac.signal })) {
+      for await (const ev of this.agent.run(sessionId, message, {
+        signal: ac.signal,
+        safetyMode: this.runtime.safetyMode,
+      })) {
         send("chat.event", { sessionId, event: ev });
       }
       send("chat.end", { sessionId });
@@ -691,6 +839,7 @@ export class Gateway {
         const result = await this.imageHost.upload(uploadRequest, {
           signal: AbortSignal.timeout(FILE_UPLOAD_TIMEOUT_MS),
         });
+        this.attachments.remember(result.fileId, inputUrl, inferredFileName, body.mimeType ?? dataMimeType);
         return this.sendJson(res, 200, result);
       } catch (err) {
         console.error(
@@ -709,6 +858,7 @@ export class Gateway {
       const result: FileUploadResponse = await provider.uploadFile(uploadRequest, {
         signal: AbortSignal.timeout(FILE_UPLOAD_TIMEOUT_MS),
       });
+      this.attachments.remember(result.fileId, inputUrl, inferredFileName, body.mimeType ?? dataMimeType);
       return this.sendJson(res, 200, result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -787,6 +937,78 @@ export class Gateway {
         error: timedOut ? "Local PDF parsing timed out" : "Local PDF parsing failed",
         code: timedOut ? "PDF_PARSE_TIMEOUT" : "PDF_PARSE_FAILED",
         message,
+      });
+    }
+  }
+
+  /** Resolve an explicitly supplied local media path under the current safety mode. */
+  private async handleReadLocalFile(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const body = await readJsonBody(req) as { path?: unknown };
+    if (typeof body.path !== "string" || !body.path.trim()) {
+      return this.sendJson(res, 400, {
+        error: "path is required",
+        code: "LOCAL_FILE_PATH_REQUIRED",
+      });
+    }
+
+    const requestedPath = normalizeLocalFilePath(body.path);
+    const resolved = resolveInWorkspace(this.runtime.workspace, requestedPath, {
+      allowOutsideWorkspace: this.runtime.safetyMode === "full-access",
+    });
+    if (!resolved.ok) {
+      return this.sendJson(res, 403, {
+        error: resolved.reason,
+        code: "LOCAL_FILE_BLOCKED",
+      });
+    }
+
+    try {
+      const stat = await fs.promises.stat(resolved.resolved);
+      if (!stat.isFile()) {
+        return this.sendJson(res, 400, {
+          error: "path is not a file",
+          code: "LOCAL_FILE_NOT_A_FILE",
+        });
+      }
+
+      const fileName = pathModule.basename(resolved.resolved);
+      const mimeType = mimeTypeForExtension(pathModule.extname(fileName));
+      const descriptor = classifyFileInput(fileName, stat.size, mimeType);
+      if (!descriptor.accepted || !descriptor.kind) {
+        return this.sendFileInputError(res, descriptor);
+      }
+
+      // Text paths are promoted only for the document/image flows currently
+      // understood by the client. Audio/video still require an explicit file
+      // attachment so a large binary is never read merely because it appears
+      // in prose.
+      if (descriptor.kind !== "image" && descriptor.kind !== "document") {
+        return this.sendJson(res, 415, {
+          error: "Only image and document paths can be attached from text",
+          code: "LOCAL_MEDIA_KIND_UNSUPPORTED",
+          fileName,
+          kind: descriptor.kind,
+        });
+      }
+
+      const bytes = await fs.promises.readFile(resolved.resolved);
+      const response: LocalFileReadResponse = {
+        ok: true,
+        fileName,
+        extension: descriptor.extension,
+        mimeType,
+        kind: descriptor.kind,
+        sizeBytes: bytes.length,
+        dataUrl: `data:${mimeType};base64,${bytes.toString("base64")}`,
+      };
+      return this.sendJson(res, 200, response);
+    } catch (error) {
+      return this.sendJson(res, 404, {
+        error: error instanceof Error ? error.message : "Local file is not readable",
+        code: "LOCAL_FILE_READ_FAILED",
       });
     }
   }
@@ -880,25 +1102,23 @@ export class Gateway {
         break;
       }
       case "setConfirmMode": {
-        this.confirmModes.set(
-          ws,
-          msg.mode === "no-confirm" ? "no-confirm" : "confirm",
-        );
+        const mode: SafetyMode = normalizeSafetyMode(msg.mode) ?? "confirm";
+        this.confirmModes.set(ws, mode);
         ws.send(
           JSON.stringify({
             type: "confirmMode.ack",
-            mode: this.confirmModes.get(ws),
+            mode,
           }),
         );
         break;
       }
       case "chat": {
-        await this.handleWsChat(ws, msg.sessionId, msg.message, generateId());
+        await this.handleWsChat(ws, msg.sessionId, msg.message, generateId(), msg.safetyMode);
         return;
         break;
       }
       case "chat.start": {
-        await this.handleWsChat(ws, msg.sessionId, msg.message, msg.runId);
+        await this.handleWsChat(ws, msg.sessionId, msg.message, msg.runId, msg.safetyMode);
         break;
       }
       case "chat.cancel": {
@@ -922,18 +1142,30 @@ export class Gateway {
     sessionId: string,
     message: ChatMessage,
     runId: string,
+    requestedSafetyMode?: SafetyMode,
   ): Promise<void> {
-    const visibleAttachmentCount = countAttachmentParts(message.content);
-    const providerAttachmentCount = countAttachmentParts(message.agentContext);
-    if (Math.max(visibleAttachmentCount, providerAttachmentCount) > MAX_FILES_PER_MESSAGE) {
-      ws.send(JSON.stringify({
+   const visibleAttachmentCount = countAttachmentParts(message.content);
+   const providerAttachmentCount = countAttachmentParts(message.agentContext);
+    const visibleImageCount = countImageAttachmentParts(message.content);
+    const providerImageCount = countImageAttachmentParts(message.agentContext);
+    if (Math.max(visibleImageCount, providerImageCount) > MAX_IMAGES_PER_MESSAGE) {
+     ws.send(JSON.stringify({
         type: "error",
+        code: "TOO_MANY_IMAGES",
+        message: `A message may contain at most ${MAX_IMAGES_PER_MESSAGE} images`,
+       runId,
+     }));
+     return;
+   }
+    if (Math.max(visibleAttachmentCount, providerAttachmentCount) > MAX_FILES_PER_MESSAGE) {
+     ws.send(JSON.stringify({
+       type: "error",
         code: "TOO_MANY_FILES",
         message: `A message may contain at most ${MAX_FILES_PER_MESSAGE} files`,
-        runId,
-      }));
-      return;
-    }
+       runId,
+     }));
+     return;
+   }
     const session = this.sessions.get(sessionId);
     if (!session) {
       ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
@@ -952,6 +1184,9 @@ export class Gateway {
     }
 
     const controller = new AbortController();
+    const safetyMode = normalizeSafetyMode(requestedSafetyMode)
+      ?? this.confirmModes.get(ws)
+      ?? this.runtime.safetyMode;
     const onClose = () => controller.abort();
     this.activeRuns.set(runId, { ws, sessionId, controller });
     ws.once("close", onClose);
@@ -988,6 +1223,7 @@ export class Gateway {
       for await (const event of this.agent.run(sessionId, message, {
         signal: controller.signal,
         confirm,
+        safetyMode,
         runId,
       })) {
         if (event.type === "run" && event.status !== "running") {
@@ -1044,6 +1280,8 @@ export class Gateway {
       browser: this.browser.status(),
       visionConfigured: this.runtime.visionEnabled,
       imageHostConfigured: Boolean(this.imageHost),
+      searchConfigured: Boolean(process.env.YOOMCLAW_SEARCH_URL),
+      mcpConfigured: Boolean(process.env.YOOMCLAW_MCP_URL),
       prompts: {
         global: this.promptStore.readGlobalPrompt(),
         user: this.promptStore.readUserProfile(),
@@ -1070,12 +1308,12 @@ export class Gateway {
     }
     if (Array.isArray(patch.toolsets)) {
       this.runtime.toolsets = patch.toolsets.filter((value): value is RuntimeConfig["toolsets"][number] =>
-        ["coding", "memory", "skills", "browser", "vision"].includes(String(value)),
+        ["coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration", "mcp", "computer"].includes(String(value)),
       );
       this.config.agentConfig.toolsets = this.runtime.toolsets;
       this.agent.config.toolsets = this.runtime.toolsets;
     }
-    if (patch.safetyMode === "confirm" || patch.safetyMode === "workspace-auto") {
+    if (patch.safetyMode === "confirm" || patch.safetyMode === "workspace-auto" || patch.safetyMode === "full-access") {
       this.runtime.safetyMode = patch.safetyMode;
       this.config.agentConfig.safetyMode = patch.safetyMode;
       this.agent.config.safetyMode = patch.safetyMode;
@@ -1254,6 +1492,38 @@ function extensionForMimeType(mimeType: string): string {
     "video/mp4": "mp4",
   };
   return known[normalized] ?? "bin";
+}
+
+function mimeTypeForExtension(extension: string): string {
+  const normalized = extension.replace(/^\./, "").toLowerCase();
+  const known: Record<string, string> = {
+    pdf: "application/pdf",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    html: "text/html",
+    csv: "text/csv",
+    json: "application/json",
+    xml: "application/xml",
+    md: "text/markdown",
+    png: "image/png",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    webp: "image/webp",
+  };
+  return known[normalized] ?? "application/octet-stream";
+}
+
+function normalizeLocalFilePath(value: string): string {
+  const trimmed = value.trim().replace(/^["']|["']$/g, "");
+  if (!/^file:/i.test(trimmed)) return trimmed;
+  try {
+    return fileURLToPath(trimmed);
+  } catch {
+    return trimmed;
+  }
 }
 
 /**

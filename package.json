@@ -19,6 +19,9 @@
     "test:file-inputs": "tsx scripts/file-input-live.ts",
     "test:file-inputs:ui": "tsx scripts/file-input-ui.mjs",
     "test:file-inputs:history": "node scripts/file-input-history-crosscheck.mjs",
+    "test:e2e:ui": "node scripts/full-e2e-ui.mjs",
+    "test:e2e:history": "node scripts/file-input-history-crosscheck.mjs",
+    "test:e2e:chrome-history": "node scripts/e2e-chrome-history.mjs",
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo"
   },
   "devDependencies": {
