@@ -129,7 +129,7 @@ export function Toggle({
           border: 1px solid var(--border);
           padding: 0;
           position: relative;
-          transition: background 0.16s, border-color 0.16s;
+          transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
         }
         .toggle:hover {
           border-color: var(--border-active);
@@ -146,7 +146,7 @@ export function Toggle({
           height: 16px;
           border-radius: 50%;
           background: var(--text-muted);
-          transition: transform 0.16s, background 0.16s;
+          transition: transform var(--motion-fast) var(--ease-emphasized), background var(--motion-fast) var(--ease-standard);
         }
         .toggle.on .knob {
           transform: translateX(16px);
@@ -198,7 +198,7 @@ export function Segmented<T extends string | number>({
           background: var(--bg-panel);
           color: var(--text-secondary);
           font-size: 12.5px;
-          transition: border-color 0.15s, color 0.15s, background 0.15s;
+          transition: border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard);
         }
         .seg.compact .seg-opt {
           flex: 0 0 auto;

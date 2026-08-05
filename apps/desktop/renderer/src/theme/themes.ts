@@ -345,6 +345,7 @@ export const DEFAULT_MODE: ThemeMode = "system";
 
 export const THEME_ID_KEY = "yoomclaw-theme-id";
 export const THEME_MODE_KEY = "yoomclaw-theme-mode";
+export const REDUCED_MOTION_KEY = "yoomclaw-reduced-motion";
 
 export function getEffectiveMode(mode: ThemeMode): "light" | "dark" {
   if (mode === "system") {
@@ -382,10 +383,17 @@ export function applyPalette(themeId: string, mode: ThemeMode): void {
   root.style.colorScheme = effective;
 }
 
+export function applyReducedMotion(reducedMotion: boolean): void {
+  if (typeof document === "undefined") return;
+  document.documentElement.dataset.reducedMotion = reducedMotion ? "true" : "false";
+}
+
 /** 在 React 挂载前同步应用，避免首帧闪烁。 */
 export function applyInitialTheme(): void {
   if (typeof window === "undefined") return;
   const id = (localStorage.getItem(THEME_ID_KEY) as string) || DEFAULT_THEME_ID;
   const mode = (localStorage.getItem(THEME_MODE_KEY) as ThemeMode) || DEFAULT_MODE;
+  const reducedMotion = localStorage.getItem(REDUCED_MOTION_KEY) === "true";
   applyPalette(id, mode);
+  applyReducedMotion(reducedMotion);
 }

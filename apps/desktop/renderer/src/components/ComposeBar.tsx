@@ -513,7 +513,7 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
           border: 1px solid var(--composer-border);
           position: relative;
           transition: border-color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized);
-          animation: yc-fade-up 220ms var(--ease-standard) both;
+          animation: yc-fade-up var(--motion-normal) var(--ease-standard) both;
         }
         .compose-bar.is-drag-active .compose-inner {
           border-color: var(--composer-focus-border);
@@ -569,7 +569,7 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
           align-items: center;
           justify-content: center;
           color: var(--text-secondary);
-          transition: background 0.15s, color 0.15s;
+          transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
         }
         .tool-btn:hover {
           background: var(--bg-element);
@@ -650,7 +650,7 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: all 0.15s;
+          transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized);
         }
         .attach-remove:hover {
           background: var(--bg-panel);

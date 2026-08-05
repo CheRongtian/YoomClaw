@@ -124,7 +124,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
           font-size: 13px;
           color: var(--text-secondary);
           text-align: left;
-          transition: background 0.14s, color 0.14s;
+          transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
         }
         .nav-item:hover {
           background: var(--bg-element);

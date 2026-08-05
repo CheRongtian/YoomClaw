@@ -45,8 +45,8 @@
 
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
-  --motion-fast: 140ms;
-  --motion-normal: 220ms;
+  --motion-fast: 160ms;
+  --motion-normal: 240ms;
 
   /* 聊天内容列：消息、工具卡片、附件和输入框共用同一条轨道 */
   --chat-content-width: 860px;
@@ -178,12 +178,12 @@ pre {
   padding: 0 var(--chat-content-gutter);
   gap: 12px;
   align-items: flex-start;
-  animation: yc-reply-enter 180ms var(--ease-standard) both;
+  animation: yc-reply-enter var(--motion-normal) var(--ease-standard) both;
 }
 
 .message-row.user {
   justify-content: flex-end;
-  animation: yc-message-send 200ms var(--ease-emphasized) both;
+  animation: yc-message-send var(--motion-normal) var(--ease-emphasized) both;
 }
 
 /* A streamed reply already entered as a live row. Keep the committed copy
@@ -193,7 +193,7 @@ pre {
 }
 
 .message-row.live-row {
-  animation: yc-reply-enter 180ms var(--ease-standard) both;
+  animation: yc-reply-enter var(--motion-normal) var(--ease-standard) both;
 }
 
 .message-avatar {
@@ -225,8 +225,8 @@ pre {
 }
 
 @keyframes yc-fade-up {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes yc-message-send {
@@ -269,11 +269,22 @@ pre {
   to { transform: rotate(360deg); }
 }
 
+[data-reduced-motion="true"] *,
+[data-reduced-motion="true"] *::before,
+[data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: 0.01ms !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;

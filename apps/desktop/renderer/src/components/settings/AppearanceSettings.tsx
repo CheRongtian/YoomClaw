@@ -1,6 +1,7 @@
 import { useTheme } from "../../theme/ThemeProvider";
 import type { ThemeMode } from "../../theme/themes";
 import { SunIcon, MoonIcon, MonitorIcon, CheckIcon } from "../icons";
+import { SettingRow, Toggle } from "./controls";
 
 const MODES: { value: ThemeMode; label: string; Icon: typeof SunIcon }[] = [
   { value: "light", label: "浅色", Icon: SunIcon },
@@ -10,7 +11,7 @@ const MODES: { value: ThemeMode; label: string; Icon: typeof SunIcon }[] = [
 
 /** 外观设置：深浅模式 + 全部预设配色 */
 export default function AppearanceSettings() {
-  const { themeId, mode, themes, setThemeId, setMode } = useTheme();
+  const { themeId, mode, themes, reducedMotion, setThemeId, setMode, setReducedMotion } = useTheme();
 
   return (
     <>
@@ -28,6 +29,19 @@ export default function AppearanceSettings() {
           </button>
         ))}
       </div>
+
+      <div className="grp-title">动效</div>
+      <SettingRow
+        label="减少动态效果"
+        hint="降低消息入场、图标旋转和其他非必要动画"
+        control={(
+          <Toggle
+            label="减少动态效果"
+            checked={reducedMotion}
+            onChange={setReducedMotion}
+          />
+        )}
+      />
 
       <div className="grp-title">
         颜色主题 <span className="count">{themes.length}</span>
@@ -92,7 +106,7 @@ export default function AppearanceSettings() {
           background: var(--bg-panel);
           color: var(--text-secondary);
           font-size: 12.5px;
-          transition: border-color 0.15s, color 0.15s, background 0.15s;
+          transition: border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard);
         }
         .mode-opt:hover {
           border-color: var(--border-active);
@@ -122,7 +136,7 @@ export default function AppearanceSettings() {
           color: var(--text-secondary);
           font-size: 12.5px;
           text-align: left;
-          transition: border-color 0.15s, color 0.15s, background 0.15s;
+          transition: border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard);
         }
         .theme-card:hover {
           border-color: var(--border-active);

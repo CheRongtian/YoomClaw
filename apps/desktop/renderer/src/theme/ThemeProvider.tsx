@@ -8,9 +8,11 @@ import {
 } from "react";
 import {
   applyPalette,
+  applyReducedMotion,
   DEFAULT_MODE,
   DEFAULT_THEME_ID,
   getEffectiveMode,
+  REDUCED_MOTION_KEY,
   THEME_ID_KEY,
   THEME_MODE_KEY,
   THEMES,
@@ -23,14 +25,18 @@ interface ThemeContextValue {
   mode: ThemeMode;
   effectiveMode: "light" | "dark";
   themes: ThemeDef[];
+  reducedMotion: boolean;
   setThemeId: (id: string) => void;
   setMode: (mode: ThemeMode) => void;
+  setReducedMotion: (reduced: boolean) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function readInitial(): { themeId: string; mode: ThemeMode } {
-  if (typeof window === "undefined") return { themeId: DEFAULT_THEME_ID, mode: DEFAULT_MODE };
+function readInitial(): { themeId: string; mode: ThemeMode; reducedMotion: boolean } {
+  if (typeof window === "undefined") {
+    return { themeId: DEFAULT_THEME_ID, mode: DEFAULT_MODE, reducedMotion: false };
+  }
   const savedThemeId = localStorage.getItem(THEME_ID_KEY);
   const themeId = savedThemeId && THEMES.some((theme) => theme.id === savedThemeId)
     ? savedThemeId
@@ -39,20 +45,24 @@ function readInitial(): { themeId: string; mode: ThemeMode } {
   const mode: ThemeMode = savedMode === "light" || savedMode === "dark" || savedMode === "system"
     ? savedMode
     : DEFAULT_MODE;
-  return { themeId, mode };
+  const reducedMotion = localStorage.getItem(REDUCED_MOTION_KEY) === "true";
+  return { themeId, mode, reducedMotion };
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const initial = readInitial();
   const [themeId, setThemeIdState] = useState(initial.themeId);
   const [mode, setModeState] = useState<ThemeMode>(initial.mode);
+  const [reducedMotion, setReducedMotionState] = useState(initial.reducedMotion);
 
   // 应用 + 持久化
   useEffect(() => {
     applyPalette(themeId, mode);
+    applyReducedMotion(reducedMotion);
     localStorage.setItem(THEME_ID_KEY, themeId);
     localStorage.setItem(THEME_MODE_KEY, mode);
-  }, [themeId, mode]);
+    localStorage.setItem(REDUCED_MOTION_KEY, String(reducedMotion));
+  }, [themeId, mode, reducedMotion]);
 
   // 跟随系统：mode=system 时监听系统配色变化
   useEffect(() => {
@@ -69,12 +79,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       mode,
       effectiveMode: getEffectiveMode(mode),
       themes: THEMES,
+      reducedMotion,
       setThemeId: (id: string) => {
         if (THEMES.some((theme) => theme.id === id)) setThemeIdState(id);
       },
       setMode: (m: ThemeMode) => setModeState(m),
+      setReducedMotion: (reduced: boolean) => setReducedMotionState(reduced),
     }),
-    [themeId, mode],
+    [themeId, mode, reducedMotion],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

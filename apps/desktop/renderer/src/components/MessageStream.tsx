@@ -700,7 +700,7 @@ function LiveRow({ live }: { live: LiveAssistant }) {
         .progress-fill {
           height: 100%;
           background: var(--primary);
-          transition: width 0.3s ease;
+          transition: width var(--motion-normal) var(--ease-standard);
         }
         .tools {
           display: flex;

@@ -620,7 +620,7 @@ export default function SessionSidebar({
           opacity: 1;
           transform: translateX(0) scale(1);
         }
-        .session-action-btn.pinned { color: var(--warning); }
+        .session-action-btn.pinned { color: var(--primary); }
         .session-action-btn:hover :global(svg) { transform: scale(1.12); }
         .session-item.pin-row-feedback {
           /* WAAPI owns transform while this class is active. */
@@ -661,16 +661,17 @@ export default function SessionSidebar({
           border-radius: 8px;
           font-size: 13px;
           color: var(--text-secondary);
-          transition: background 0.14s, color 0.14s;
+          transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized);
         }
         .settings-btn:hover {
           background: var(--bg-element);
           color: var(--text);
         }
         .settings-btn :global(svg) {
-          transition: transform 320ms var(--ease-emphasized);
+          transform-origin: center;
+          transition: transform var(--motion-fast) var(--ease-emphasized);
         }
-        .settings-btn:hover :global(svg) { transform: rotate(22deg); }
+        .settings-btn:hover :global(svg) { transform: rotate(14deg); }
         @media (max-width: 768px) {
           .sidebar {
             position: fixed;
