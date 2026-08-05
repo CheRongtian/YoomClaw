@@ -293,12 +293,25 @@ export default function ChatPage() {
   const pendingSidebarWidthRef = useRef<number | null>(null);
   const runIdRef = useRef<string | null>(null);
   const liveRef = useRef<LiveAssistant | null>(null);
+  const liveRenderFrameRef = useRef<number | null>(null);
+  const pendingRunEventsRef = useRef<AgentEvent[]>([]);
   const disposedRef = useRef(false);
   const wsGenerationRef = useRef(0);
   const wsReconnectTimerRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const modePickerRef = useRef<HTMLDivElement | null>(null);
   const selectedSafetyMode = SAFETY_MODE_OPTIONS.find((option) => option.value === safetyMode) ?? SAFETY_MODE_OPTIONS[1];
+
+  const cancelPendingLiveRender = () => {
+    if (liveRenderFrameRef.current !== null) {
+      window.cancelAnimationFrame(liveRenderFrameRef.current);
+      liveRenderFrameRef.current = null;
+    }
+    pendingRunEventsRef.current = [];
+  };
+
+  useEffect(() => () => cancelPendingLiveRender(), []);
 
   useEffect(() => {
     refreshSessions();
@@ -398,6 +411,7 @@ export default function ChatPage() {
           sessionViewRevisionRef.current += 1;
           currentSessionIdRef.current = null;
           runIdRef.current = null;
+          cancelPendingLiveRender();
           liveRef.current = null;
           setCurrentSessionId(null);
           setCurrentMessages([]);
@@ -436,6 +450,8 @@ export default function ChatPage() {
       }
       currentSessionIdRef.current = id;
       setCurrentSessionId(id);
+      shouldAutoScrollRef.current = true;
+      cancelPendingLiveRender();
       liveRef.current = null;
       setLive(null);
       setHistoricalTools([]);
@@ -504,6 +520,7 @@ export default function ChatPage() {
       }
       runIdRef.current = null;
       setStreaming(false);
+      cancelPendingLiveRender();
       liveRef.current = null;
       setLive(null);
     }
@@ -536,6 +553,7 @@ export default function ChatPage() {
       sessionViewRevisionRef.current += 1;
       currentSessionIdRef.current = session.id;
       setCurrentSessionId(session.id);
+      shouldAutoScrollRef.current = true;
       setCurrentMessages([]);
       setHistoricalTools([]);
       setRunEvents([]);
@@ -753,6 +771,7 @@ export default function ChatPage() {
           } catch {}
         }
         runIdRef.current = null;
+        cancelPendingLiveRender();
         liveRef.current = null;
         setLive(null);
         setConfirmDialog(null);
@@ -840,6 +859,7 @@ export default function ChatPage() {
       wsRef.current = null;
       setStreaming(false);
       runIdRef.current = null;
+      cancelPendingLiveRender();
       liveRef.current = null;
       setLive(null);
       setConfirmDialog(null);
@@ -875,8 +895,21 @@ export default function ChatPage() {
   const ensureLive = (l: LiveAssistant | null): LiveAssistant =>
     l ?? { text: "", tools: [], progress: null };
 
+  const scheduleLiveRender = () => {
+    if (liveRenderFrameRef.current !== null) return;
+    liveRenderFrameRef.current = window.requestAnimationFrame(() => {
+      liveRenderFrameRef.current = null;
+      const events = pendingRunEventsRef.current;
+      pendingRunEventsRef.current = [];
+      setLive(liveRef.current);
+      if (events.length > 0) {
+        setRunEvents((previous) => [...previous, ...events]);
+      }
+    });
+  };
+
   const applyEvent = useCallback((ev: AgentEvent) => {
-    setRunEvents((previous) => [...previous, ev]);
+    pendingRunEventsRef.current.push(ev);
     const l = ensureLive(liveRef.current);
     let next: LiveAssistant;
     switch (ev.type) {
@@ -967,7 +1000,7 @@ export default function ChatPage() {
         next = l;
     }
     liveRef.current = next;
-    setLive(next);
+    scheduleLiveRender();
 
     if (ev.type === "tool_confirm") {
       setConfirmDialog({
@@ -980,6 +1013,15 @@ export default function ChatPage() {
   }, []);
 
   const commitLive = useCallback(() => {
+    if (liveRenderFrameRef.current !== null) {
+      window.cancelAnimationFrame(liveRenderFrameRef.current);
+      liveRenderFrameRef.current = null;
+    }
+    const pendingEvents = pendingRunEventsRef.current;
+    pendingRunEventsRef.current = [];
+    if (pendingEvents.length > 0) {
+      setRunEvents((previous) => [...previous, ...pendingEvents]);
+    }
     const l = liveRef.current;
     if (l) {
       if (l.tools.length > 0) {
@@ -1401,6 +1443,7 @@ export default function ChatPage() {
         !hasLocalPathContext;
       if (allAttachmentsFailed) {
         if (!isSendStillCurrent()) return false;
+        cancelPendingLiveRender();
         liveRef.current = null;
         setLive(null);
         setConfirmDialog(null);
@@ -1466,6 +1509,7 @@ export default function ChatPage() {
         console.error("Failed to send chat message:", err);
         runIdRef.current = null;
         setStreaming(false);
+        cancelPendingLiveRender();
         liveRef.current = null;
         setLive(null);
         setCurrentMessages((previous) =>
@@ -1487,6 +1531,8 @@ export default function ChatPage() {
         ))));
       }
       setRunNotice(null);
+      shouldAutoScrollRef.current = true;
+      cancelPendingLiveRender();
       setCurrentMessages((prev) => [...prev, userMsg]);
       setRunEvents([]);
       setPlan(null);
@@ -1547,11 +1593,33 @@ export default function ChatPage() {
   );
 
   useEffect(() => {
+    const anchor = messagesEndRef.current;
+    const stream = anchor?.parentElement;
+    if (!stream) return;
+
+    const updateScrollIntent = () => {
+      const distanceFromBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+      shouldAutoScrollRef.current = distanceFromBottom <= 96;
+    };
+    updateScrollIntent();
+    stream.addEventListener("scroll", updateScrollIntent, { passive: true });
+    return () => stream.removeEventListener("scroll", updateScrollIntent);
+  }, [currentSessionId]);
+
+  const liveScrollKey = live
+    ? `${live.text.length}:${live.tools.length}:${live.progress?.percent ?? -1}`
+    : "idle";
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) return;
     const frame = window.requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: live ? "auto" : "smooth" });
+      if (!shouldAutoScrollRef.current) return;
+      const anchor = messagesEndRef.current;
+      const stream = anchor?.parentElement;
+      if (stream) stream.scrollTop = stream.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [currentMessages, live]);
+  }, [currentMessages, liveScrollKey]);
 
   // 托盘菜单的"设置"入口
   useEffect(() => {

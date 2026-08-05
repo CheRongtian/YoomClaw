@@ -512,7 +512,7 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
           padding: 12px 12px 10px;
           border: 1px solid var(--composer-border);
           position: relative;
-          transition: border-color 0.15s, box-shadow 0.15s;
+          transition: border-color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized);
           animation: yc-fade-up 220ms var(--ease-standard) both;
         }
         .compose-bar.is-drag-active .compose-inner {
@@ -583,7 +583,7 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
           align-items: center;
           justify-content: center;
           flex-shrink: 0;
-          transition: background 0.15s, filter 0.15s;
+          transition: background var(--motion-fast) var(--ease-standard), filter var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized);
         }
         .send-btn {
           background: var(--send-bg);

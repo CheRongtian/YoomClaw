@@ -614,7 +614,7 @@ function HistoricalToolsRow({ tools }: { tools: ToolCard[] }) {
 
 function LiveRow({ live }: { live: LiveAssistant }) {
   return (
-    <div className="message-row assistant">
+    <div className="message-row assistant live-row">
       <div className="message-avatar">
         <SpiralLogo size={18} />
       </div>
