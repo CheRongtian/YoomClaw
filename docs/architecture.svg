@@ -1,0 +1,286 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="860" viewBox="0 0 1440 860" role="img" aria-labelledby="title desc">
+  <title id="title">YoomClaw architecture</title>
+  <desc id="desc">A left-to-right view of YoomClaw: Desktop App and CLI clients connect to the Gateway, which streams requests into the Agent Core and the JimoAI LLM provider.</desc>
+
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a0f1d" />
+      <stop offset="0.55" stop-color="#10172a" />
+      <stop offset="1" stop-color="#111d32" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5eead4" />
+      <stop offset="0.5" stop-color="#8b5cf6" />
+      <stop offset="1" stop-color="#60a5fa" />
+    </linearGradient>
+    <linearGradient id="accentSoft" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5eead4" stop-opacity="0.9" />
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0.9" />
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#151f35" />
+      <stop offset="1" stop-color="#10182b" />
+    </linearGradient>
+    <linearGradient id="panelRaised" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a2945" />
+      <stop offset="1" stop-color="#111a2d" />
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#8aa0c8" stroke-opacity="0.08" stroke-width="1" />
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.28" />
+    </filter>
+    <filter id="softGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="26" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5eead4" />
+    </marker>
+    <style>
+      .brand { fill: #f7f9ff; font: 700 20px Inter, Segoe UI, sans-serif; letter-spacing: -0.02em; }
+      .title { fill: #f7f9ff; font: 700 32px Inter, Segoe UI, sans-serif; letter-spacing: -0.03em; }
+      .subtitle { fill: #9eabc2; font: 400 15px Inter, Segoe UI, sans-serif; }
+      .eyebrow { fill: #7e8da8; font: 700 10px Inter, Segoe UI, sans-serif; letter-spacing: 0.14em; }
+      .step { fill: #6f7f9d; font: 700 10px Inter, Segoe UI, sans-serif; letter-spacing: 0.12em; }
+      .cardTitle { fill: #f7f9ff; font: 700 20px Inter, Segoe UI, sans-serif; letter-spacing: -0.02em; }
+      .cardSub { fill: #9eabc2; font: 400 12px Inter, Segoe UI, sans-serif; }
+      .body { fill: #e3e9f5; font: 600 13px Inter, Segoe UI, sans-serif; }
+      .bodyMuted { fill: #9eabc2; font: 400 12px Inter, Segoe UI, sans-serif; }
+      .mono { fill: #d9e2f2; font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .monoSmall { fill: #b9c8df; font: 500 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .chip { fill: #dfe8f7; font: 700 10px Inter, Segoe UI, sans-serif; letter-spacing: 0.03em; }
+      .flowLabel { fill: #72e6d7; font: 700 9px Inter, Segoe UI, sans-serif; letter-spacing: 0.08em; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="860" rx="26" fill="url(#background)" />
+  <rect x="1" y="1" width="1438" height="858" rx="25" fill="url(#grid)" />
+  <circle cx="1280" cy="110" r="180" fill="#6d5dfc" fill-opacity="0.12" filter="url(#softGlow)" />
+  <circle cx="150" cy="760" r="150" fill="#25c7b3" fill-opacity="0.08" filter="url(#softGlow)" />
+
+  <!-- Header -->
+  <g>
+    <rect x="32" y="30" width="38" height="38" rx="12" fill="url(#accent)" />
+    <path d="M 42 42 C 42 37 46 34 51 34 C 56 34 60 38 60 43 L 60 48 C 60 49 59 50 58 50 C 57 50 56 49 56 48 L 56 43 C 56 40 54 38 51 38 C 48 38 46 40 46 43 L 46 48 C 46 49 45 50 44 50 C 43 50 42 49 42 48 Z" fill="#ffffff" fill-opacity="0.98" />
+    <path d="M 51 40 C 48 40 46 42 46 45 C 46 49 49 53 54 56 C 55 57 56 56 56 55 C 56 54 55 53 54 53 C 51 51 50 48 50 45 C 50 44 51 43 52 43 C 53 43 54 44 54 45 C 54 46 55 47 56 47 C 57 47 58 46 58 45 C 58 42 55 40 51 40 Z" fill="#ffffff" fill-opacity="0.98" />
+    <text x="84" y="56" class="brand">YoomClaw</text>
+    <text x="32" y="111" class="title">Architecture</text>
+    <text x="32" y="137" class="subtitle">From a desktop prompt to a streamed, tool-aware answer.</text>
+    <rect x="1037" y="38" width="371" height="34" rx="17" fill="#141f36" stroke="#2a3a5a" />
+    <circle cx="1057" cy="55" r="5" fill="#5eead4" />
+    <text x="1071" y="59" class="flowLabel">LOCAL-FIRST  ·  STREAMING  ·  EXTENSIBLE</text>
+  </g>
+
+  <!-- Flow labels -->
+  <text x="28" y="171" class="step">01 / CLIENTS</text>
+  <text x="340" y="171" class="step">02 / EDGE</text>
+  <text x="674" y="171" class="step">03 / RUNTIME</text>
+  <text x="1110" y="171" class="step">04 / PROVIDER</text>
+
+  <!-- Transport arrows -->
+  <path d="M 303 424 H 329" fill="none" stroke="#5eead4" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+  <text x="316" y="400" text-anchor="middle" class="flowLabel">HTTP</text>
+  <text x="316" y="447" text-anchor="middle" class="flowLabel">SSE</text>
+
+  <path d="M 635 424 H 663" fill="none" stroke="#8b9bff" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+  <text x="649" y="400" text-anchor="middle" class="flowLabel">SSE</text>
+  <text x="649" y="447" text-anchor="middle" class="flowLabel">OUT</text>
+
+  <path d="M 1071 424 H 1099" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+  <text x="1085" y="400" text-anchor="middle" class="flowLabel">SSE</text>
+  <text x="1085" y="447" text-anchor="middle" class="flowLabel">OUT</text>
+
+  <!-- Client card -->
+  <g filter="url(#shadow)">
+    <rect x="28" y="196" width="270" height="492" rx="20" fill="url(#panel)" stroke="#2a3a5a" stroke-width="1.5" />
+    <rect x="28" y="196" width="270" height="4" rx="2" fill="#5eead4" />
+  </g>
+  <g>
+    <rect x="50" y="228" width="38" height="38" rx="12" fill="#153b4a" stroke="#315e75" />
+    <path d="M 61 240 H 77 M 61 247 H 77 M 61 254 H 72" fill="none" stroke="#5eead4" stroke-width="2" stroke-linecap="round" />
+    <text x="102" y="239" class="eyebrow">CLIENT</text>
+    <text x="102" y="263" class="cardTitle">Desktop App</text>
+    <text x="102" y="284" class="cardSub">Electron + Vite/React</text>
+    <line x1="50" y1="306" x2="276" y2="306" stroke="#263653" />
+
+    <circle cx="57" cy="334" r="4" fill="#5eead4" />
+    <text x="72" y="338" class="body">Session sidebar</text>
+    <text x="72" y="358" class="bodyMuted">create · select · delete</text>
+
+    <circle cx="57" cy="394" r="4" fill="#8b5cf6" />
+    <text x="72" y="398" class="body">Message stream</text>
+    <text x="72" y="418" class="bodyMuted">Markdown · code · LaTeX · streaming</text>
+
+    <circle cx="57" cy="454" r="4" fill="#60a5fa" />
+    <text x="72" y="458" class="body">Compose bar</text>
+    <text x="72" y="478" class="bodyMuted">Enter to send · Shift+Enter newline</text>
+
+    <line x1="50" y1="514" x2="276" y2="514" stroke="#263653" />
+    <text x="50" y="543" class="eyebrow">CLI ENTRYPOINT</text>
+    <text x="50" y="568" class="mono">claw serve</text>
+    <text x="50" y="592" class="bodyMuted">Same Gateway, different surface.</text>
+    <rect x="50" y="621" width="226" height="38" rx="12" fill="#101a2f" stroke="#263653" />
+    <circle cx="67" cy="640" r="4" fill="#a3e635" />
+    <text x="80" y="644" class="bodyMuted">User-facing clients stay thin.</text>
+  </g>
+
+  <!-- Gateway card -->
+  <g filter="url(#shadow)">
+    <rect x="340" y="196" width="290" height="492" rx="20" fill="url(#panel)" stroke="#2a3a5a" stroke-width="1.5" />
+    <rect x="340" y="196" width="290" height="4" rx="2" fill="#8b5cf6" />
+  </g>
+  <g>
+    <rect x="362" y="228" width="38" height="38" rx="12" fill="#27254d" stroke="#554c9c" />
+    <path d="M 373 247 H 389 M 381 239 V 255 M 376 239 L 381 234 L 386 239 M 376 255 L 381 260 L 386 255" fill="none" stroke="#b6a5ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <text x="414" y="239" class="eyebrow">EDGE SERVER</text>
+    <text x="414" y="263" class="cardTitle">Gateway</text>
+    <text x="414" y="284" class="cardSub">HTTP + WebSocket · :18789</text>
+    <line x1="362" y1="306" x2="608" y2="306" stroke="#263653" />
+    <text x="362" y="329" class="eyebrow">REPRESENTATIVE ROUTES</text>
+
+    <g>
+      <rect x="362" y="342" width="52" height="20" rx="10" fill="#123c42" />
+      <text x="388" y="356" text-anchor="middle" class="chip">REST</text>
+      <text x="426" y="354" class="mono">/api/sessions</text>
+      <text x="426" y="373" class="bodyMuted">CRUD sessions</text>
+
+      <rect x="362" y="395" width="52" height="20" rx="10" fill="#2e2352" />
+      <text x="388" y="409" text-anchor="middle" class="chip">SSE</text>
+      <text x="426" y="407" class="monoSmall">/api/sessions/:id/messages</text>
+      <text x="426" y="426" class="bodyMuted">streamed chat events</text>
+
+      <rect x="362" y="448" width="52" height="20" rx="10" fill="#1b3152" />
+      <text x="388" y="462" text-anchor="middle" class="chip">FILE</text>
+      <text x="426" y="460" class="mono">/api/upload/file</text>
+      <text x="426" y="479" class="bodyMuted">proxy file upload</text>
+
+      <rect x="362" y="501" width="52" height="20" rx="10" fill="#1b3152" />
+      <text x="388" y="515" text-anchor="middle" class="chip">LIST</text>
+      <text x="426" y="513" class="mono">/api/tools</text>
+      <text x="426" y="532" class="bodyMuted">tool catalog</text>
+
+      <rect x="362" y="554" width="52" height="20" rx="10" fill="#123c42" />
+      <text x="388" y="568" text-anchor="middle" class="chip">WS</text>
+      <text x="426" y="566" class="mono">/ws</text>
+      <text x="426" y="585" class="bodyMuted">bidirectional events</text>
+    </g>
+
+    <rect x="362" y="621" width="246" height="38" rx="12" fill="#101a2f" stroke="#263653" />
+    <circle cx="379" cy="640" r="4" fill="#8b5cf6" />
+    <text x="392" y="644" class="bodyMuted">One port · many transports.</text>
+  </g>
+
+  <!-- Agent core card -->
+  <g filter="url(#shadow)">
+    <rect x="674" y="196" width="392" height="492" rx="20" fill="url(#panelRaised)" stroke="#5b5bb0" stroke-opacity="0.75" stroke-width="1.5" />
+    <rect x="674" y="196" width="392" height="4" rx="2" fill="url(#accentSoft)" />
+  </g>
+  <g>
+    <rect x="698" y="228" width="38" height="38" rx="12" fill="#28254f" stroke="#6758c7" />
+    <path d="M 707 245 C 707 240 711 236 716 236 C 721 236 725 240 725 245 L 725 250 C 725 251 724 252 723 252 C 722 252 721 251 721 250 L 721 245 C 721 242 719 240 716 240 C 713 240 711 242 711 245 L 711 250 C 711 251 710 252 709 252 C 708 252 707 251 707 250 Z" fill="#d8d5ff" />
+    <path d="M 716 241 C 713 241 711 243 711 246 C 711 250 714 254 719 257 C 720 258 721 257 721 256 C 721 255 720 254 719 254 C 716 252 715 249 715 246 C 715 245 716 244 717 244 C 718 244 719 245 719 246 C 719 247 720 248 721 248 C 722 248 723 247 723 246 C 723 243 720 241 716 241 Z" fill="#d8d5ff" />
+    <text x="750" y="239" class="eyebrow">ORCHESTRATION</text>
+    <text x="750" y="263" class="cardTitle">Agent Core</text>
+    <text x="750" y="284" class="cardSub">stateful runtime loop</text>
+    <line x1="698" y1="306" x2="1042" y2="306" stroke="#35406a" />
+
+    <rect x="698" y="326" width="344" height="105" rx="16" fill="#111a30" stroke="#5757a9" />
+    <text x="718" y="350" class="eyebrow">AGENT</text>
+    <text x="718" y="375" class="body">Prompt → model → tool loop</text>
+    <text x="718" y="398" class="bodyMuted">history, trusted context, confirmations</text>
+    <rect x="718" y="411" width="62" height="12" rx="6" fill="#1c4650" />
+    <rect x="788" y="411" width="62" height="12" rx="6" fill="#35265c" />
+    <rect x="858" y="411" width="62" height="12" rx="6" fill="#243e67" />
+    <rect x="928" y="411" width="78" height="12" rx="6" fill="#1c4650" />
+    <text x="749" y="420" text-anchor="middle" class="chip">CONTEXT</text>
+    <text x="819" y="420" text-anchor="middle" class="chip">MODEL</text>
+    <text x="889" y="420" text-anchor="middle" class="chip">TOOLS</text>
+    <text x="967" y="420" text-anchor="middle" class="chip">EVENTS</text>
+
+    <rect x="698" y="451" width="166" height="115" rx="16" fill="#111a30" stroke="#2d5970" />
+    <circle cx="720" cy="477" r="5" fill="#5eead4" />
+    <text x="734" y="481" class="body">SessionStore</text>
+    <text x="718" y="509" class="bodyMuted">file-backed</text>
+    <text x="718" y="527" class="bodyMuted">sessions + run events</text>
+    <text x="718" y="549" class="monoSmall">persist · resume · branch</text>
+
+    <rect x="876" y="451" width="166" height="115" rx="16" fill="#111a30" stroke="#55468a" />
+    <circle cx="898" cy="477" r="5" fill="#a78bfa" />
+    <text x="912" y="481" class="body">ToolRegistry</text>
+    <text x="896" y="509" class="bodyMuted">coding · memory</text>
+    <text x="896" y="527" class="bodyMuted">Skills · browser</text>
+    <text x="896" y="549" class="monoSmall">safe · extensible</text>
+
+    <g>
+      <rect x="698" y="595" width="65" height="24" rx="12" fill="#173b46" />
+      <rect x="771" y="595" width="57" height="24" rx="12" fill="#302456" />
+      <rect x="836" y="595" width="76" height="24" rx="12" fill="#22365d" />
+      <rect x="920" y="595" width="85" height="24" rx="12" fill="#173b46" />
+      <rect x="1013" y="595" width="29" height="24" rx="12" fill="#302456" />
+      <text x="730" y="611" text-anchor="middle" class="chip">VISION</text>
+      <text x="799" y="611" text-anchor="middle" class="chip">MCP</text>
+      <text x="874" y="611" text-anchor="middle" class="chip">PLANNING</text>
+      <text x="962" y="611" text-anchor="middle" class="chip">SUBAGENTS</text>
+      <text x="1027" y="611" text-anchor="middle" class="chip">+</text>
+    </g>
+    <text x="698" y="652" class="bodyMuted">Capabilities plug into one coherent run.</text>
+  </g>
+
+  <!-- Provider card -->
+  <g filter="url(#shadow)">
+    <rect x="1110" y="196" width="300" height="492" rx="20" fill="url(#panel)" stroke="#2a3a5a" stroke-width="1.5" />
+    <rect x="1110" y="196" width="300" height="4" rx="2" fill="#60a5fa" />
+  </g>
+  <g>
+    <rect x="1132" y="228" width="38" height="38" rx="12" fill="#183457" stroke="#376ca4" />
+    <path d="M 1144 247 H 1158 M 1144 253 H 1158 M 1144 241 H 1152" fill="none" stroke="#8dc5ff" stroke-width="2" stroke-linecap="round" />
+    <text x="1184" y="239" class="eyebrow">UPSTREAM MODEL</text>
+    <text x="1184" y="263" class="cardTitle">JimoAI</text>
+    <text x="1184" y="284" class="cardSub">LLM Provider</text>
+    <line x1="1132" y1="306" x2="1388" y2="306" stroke="#263653" />
+
+    <rect x="1132" y="326" width="256" height="82" rx="14" fill="#101a2f" stroke="#2d4e79" />
+    <text x="1150" y="350" class="eyebrow">UPSTREAM ENDPOINT</text>
+    <text x="1150" y="372" class="mono">POST /v2/chat/completions/share</text>
+    <text x="1150" y="392" class="mono">?shareId=xxx</text>
+
+    <rect x="1132" y="422" width="256" height="86" rx="14" fill="#101a2f" stroke="#2d4e79" />
+    <text x="1150" y="446" class="eyebrow">REQUEST</text>
+    <text x="1150" y="469" class="bodyMuted">messages · sessionId</text>
+    <text x="1150" y="489" class="bodyMuted">source · extra</text>
+
+    <rect x="1132" y="522" width="256" height="90" rx="14" fill="#101a2f" stroke="#2d4e79" />
+    <text x="1150" y="546" class="eyebrow">RESPONSE</text>
+    <circle cx="1154" cy="570" r="4" fill="#60a5fa" />
+    <text x="1165" y="574" class="mono">event:data</text>
+    <circle cx="1247" cy="570" r="4" fill="#5eead4" />
+    <text x="1258" y="574" class="mono">event:end</text>
+    <text x="1150" y="596" class="bodyMuted">streaming chunks, end-to-end</text>
+
+    <rect x="1132" y="632" width="256" height="28" rx="14" fill="#183457" />
+    <circle cx="1149" cy="646" r="4" fill="#60a5fa" />
+    <text x="1162" y="650" class="chip">JIMOAI SSE ADAPTER</text>
+  </g>
+
+  <!-- Capability rail -->
+  <g>
+    <rect x="28" y="735" width="1382" height="82" rx="18" fill="#111a2d" stroke="#263653" />
+    <text x="52" y="764" class="eyebrow">CAPABILITY SURFACE</text>
+    <rect x="52" y="780" width="76" height="22" rx="11" fill="#173b46" />
+    <rect x="136" y="780" width="72" height="22" rx="11" fill="#302456" />
+    <rect x="216" y="780" width="78" height="22" rx="11" fill="#22365d" />
+    <rect x="302" y="780" width="75" height="22" rx="11" fill="#173b46" />
+    <rect x="385" y="780" width="56" height="22" rx="11" fill="#302456" />
+    <rect x="449" y="780" width="86" height="22" rx="11" fill="#22365d" />
+    <text x="90" y="795" text-anchor="middle" class="chip">MEMORY</text>
+    <text x="172" y="795" text-anchor="middle" class="chip">SKILLS</text>
+    <text x="255" y="795" text-anchor="middle" class="chip">BROWSER</text>
+    <text x="339" y="795" text-anchor="middle" class="chip">VISION</text>
+    <text x="413" y="795" text-anchor="middle" class="chip">MCP</text>
+    <text x="492" y="795" text-anchor="middle" class="chip">DOCUMENTS</text>
+    <line x1="1050" y1="753" x2="1050" y2="799" stroke="#263653" />
+    <circle cx="1080" cy="776" r="5" fill="#5eead4" />
+    <text x="1096" y="780" class="body">One session · many tools · one streamed answer.</text>
+  </g>
+</svg>

@@ -16,40 +16,11 @@ YoomClaw is a minimal implementation of an OpenClaw-style AI assistant framework
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  Desktop App (Electron + Vite/React renderer)                       │
-│   ├─ Session sidebar (create / select / delete)          │
-│   ├─ Message list (Markdown, code, LaTeX, streaming)     │
-│   └─ Compose bar (Enter to send, Shift+Enter for newline)│
-└────────────────────┬─────────────────────────────────────┘
-                     │ HTTP (SSE for chat, REST for sessions)
-                     ▼
-┌──────────────────────────────────────────────────────────┐
-│  Gateway (HTTP + WS, port 18789)                         │
-│   ├─ /api/sessions       — CRUD sessions                 │
-│   ├─ /api/sessions/:id/messages — SSE chat               │
-│   ├─ /api/upload/file    — Proxy file upload             │
-│   ├─ /api/tools          — List tools                    │
-│   └─ /ws                  — WebSocket for bidirectional  │
-└────────────────────┬─────────────────────────────────────┘
-                     │ Custom SSE protocol
-                     ▼
-┌──────────────────────────────────────────────────────────┐
-│  Agent Core                                              │
-│   ├─ SessionStore — file-backed sessions and run events  │
-│   ├─ ToolRegistry — coding, memory, Skills, browser tools│
-│   └─ Agent — orchestrates LLM calls + history + tools    │
-└────────────────────┬─────────────────────────────────────┘
-                     │
-                     ▼
-┌──────────────────────────────────────────────────────────┐
-│  LLM Provider (JimoAI)                                   │
-│   POST /v2/chat/completions/share?shareId=xxx            │
-│   Body: { messages, sessionId, source, extra }           │
-│   Response: SSE event:data / event:end                   │
-└──────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="./docs/architecture.png" alt="YoomClaw architecture diagram" width="100%" />
+</p>
+
+The request path is intentionally thin: clients talk to one local Gateway, the Agent Core owns state and tools, and the provider returns a streamed SSE response.
 
 ## Quick Start
 
