@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { SessionSummary } from "@yoomclaw/protocol";
+import type { UpdateState } from "../types";
 import {
   PlusIcon,
   TrashIcon,
@@ -8,6 +9,10 @@ import {
   SettingsIcon,
   EditIcon,
   PinIcon,
+  ExportIcon,
+  LoaderIcon,
+  CheckIcon,
+  WarningIcon,
 } from "./icons";
 
 interface Props {
@@ -22,6 +27,10 @@ interface Props {
   onDelete: (id: string) => void | Promise<unknown>;
   onClose: () => void;
   onOpenSettings: () => void;
+  updateState: UpdateState;
+  updateLabel: string;
+  updateDisabled: boolean;
+  onUpdate: () => void | Promise<unknown>;
 }
 
 export default function SessionSidebar({
@@ -36,6 +45,10 @@ export default function SessionSidebar({
   onDelete,
   onClose,
   onOpenSettings,
+  updateState,
+  updateLabel,
+  updateDisabled,
+  onUpdate,
 }: Props) {
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SessionSummary[] | null>(null);
@@ -345,10 +358,27 @@ export default function SessionSidebar({
             <span className="dot" />
             <span>本地运行 · 数据不上传</span>
           </div>
-          <button className="settings-btn" data-testid="settings-open" onClick={onOpenSettings}>
-            <SettingsIcon size={20} />
-            <span>设置</span>
-          </button>
+          <div className="footer-actions">
+            <button className="settings-btn" data-testid="settings-open" onClick={onOpenSettings}>
+              <SettingsIcon size={20} />
+              <span>设置</span>
+            </button>
+            <button
+              className={`update-btn ${updateState.status === "downloading" || updateState.status === "checking" ? "is-loading" : ""} ${updateState.status === "available" || updateState.status === "downloaded" || updateState.status === "manual-install-required" ? "has-update" : ""}`}
+              data-testid="update-open"
+              onClick={() => void onUpdate()}
+              disabled={updateDisabled}
+              aria-label={updateLabel}
+              title={updateState.enabled ? `${updateLabel}${updateState.message ? `：${updateState.message}` : ""}` : updateState.message}
+              aria-busy={updateState.status === "downloading" || updateState.status === "checking"}
+            >
+              {updateState.status === "checking" || updateState.status === "downloading" ? <LoaderIcon size={18} /> : null}
+              {updateState.status === "downloaded" ? <CheckIcon size={18} /> : null}
+              {updateState.status === "error" ? <WarningIcon size={18} /> : null}
+              {updateState.status !== "checking" && updateState.status !== "downloading" && updateState.status !== "downloaded" && updateState.status !== "error" ? <ExportIcon size={18} /> : null}
+              {(updateState.status === "available" || updateState.status === "manual-install-required") && <span className="update-badge" />}
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -636,6 +666,11 @@ export default function SessionSidebar({
           border-top: 1px solid var(--border);
           flex-shrink: 0;
         }
+        .footer-actions {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
         .footer-line {
           display: flex;
           align-items: center;
@@ -652,7 +687,8 @@ export default function SessionSidebar({
         }
         /* 设置入口：从窗口标题栏移至侧栏底部用户区 */
         .settings-btn {
-          width: 100%;
+          flex: 1;
+          width: auto;
           height: 36px;
           display: flex;
           align-items: center;
@@ -672,6 +708,43 @@ export default function SessionSidebar({
           transition: transform var(--motion-fast) var(--ease-emphasized);
         }
         .settings-btn:hover :global(svg) { transform: rotate(14deg); }
+        .update-btn {
+          position: relative;
+          width: 36px;
+          height: 36px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex: 0 0 36px;
+          border-radius: 8px;
+          color: var(--text-secondary);
+          transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized);
+        }
+        .update-btn:hover:not(:disabled) {
+          background: var(--bg-element);
+          color: var(--text);
+        }
+        .update-btn:disabled {
+          cursor: default;
+          opacity: 0.55;
+        }
+        .update-btn.has-update {
+          color: var(--primary);
+        }
+        .update-btn.is-loading :global(svg) {
+          animation: yc-spin 900ms linear infinite;
+        }
+        .update-badge {
+          position: absolute;
+          top: 5px;
+          right: 5px;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--primary);
+          box-shadow: 0 0 0 2px var(--bg-panel);
+        }
+        @keyframes yc-spin { to { transform: rotate(360deg); } }
         @media (max-width: 768px) {
           .sidebar {
             position: fixed;

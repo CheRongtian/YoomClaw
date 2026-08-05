@@ -32,6 +32,7 @@ import WindowFrame from "./WindowFrame";
 import SpiralLogo from "./SpiralLogo";
 import SettingsPanel from "./SettingsPanel";
 import WorkbenchPanel from "./WorkbenchPanel";
+import { useAppUpdate } from "../hooks/useAppUpdate";
 import {
   PanelLeftIcon,
   PlusIcon,
@@ -285,6 +286,12 @@ export default function ChatPage() {
   const safetyModeRef = useRef<SafetyMode>("workspace-auto");
   safetyModeRef.current = safetyMode;
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const {
+    state: updateState,
+    action: updateAction,
+    label: updateLabel,
+    disabled: updateDisabled,
+  } = useAppUpdate({ busy: streaming });
 
   const wsRef = useRef<WebSocket | null>(null);
   const appShellRef = useRef<HTMLDivElement | null>(null);
@@ -1659,6 +1666,10 @@ export default function ChatPage() {
           onDelete={deleteSession}
           onClose={() => setSidebarOpen(false)}
           onOpenSettings={() => setSettingsOpen(true)}
+          updateState={updateState}
+          updateLabel={updateLabel}
+          updateDisabled={updateDisabled}
+          onUpdate={updateAction}
         />
         {sidebarOpen && (
           <div

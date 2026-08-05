@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AppSettings, AppInfo } from "./types";
+import type { AppSettings, AppInfo, UpdateState } from "./types";
 
 // styled-jsx：给 <style jsx> / <style jsx global> 补上属性声明，
 // 否则每个用了 styled-jsx 的组件都会报 TS2322。
@@ -22,6 +22,13 @@ export interface YoomClawApi {
   focusWindow(): Promise<void>;
   getPathForFile(file: File): string;
   getClipboardFilePaths(): Promise<string[]>;
+
+  getUpdateState(): Promise<UpdateState>;
+  checkForUpdate(): Promise<UpdateState>;
+  downloadUpdate(): Promise<UpdateState>;
+  installUpdate(): Promise<boolean>;
+  openDownloadedUpdate(): Promise<boolean>;
+  setUpdateBusy(busy: boolean): Promise<boolean>;
 
   getSettings(): Promise<AppSettings>;
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;

@@ -6,7 +6,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // 只允许主进程通过这些频道推事件，避免渲染层被任意频道注入
-const ALLOWED_EVENTS = ["menu:new-chat", "menu:open-settings", "window:state"];
+const ALLOWED_EVENTS = ["menu:new-chat", "menu:open-settings", "window:state", "update:state"];
 
 contextBridge.exposeInMainWorld("yoomclaw", {
   // 窗口控制
@@ -29,6 +29,14 @@ contextBridge.exposeInMainWorld("yoomclaw", {
   // Windows Explorer stores copied file paths in native clipboard formats;
   // expose a read-only, paste-time fallback for renderer ClipboardEvents.
   getClipboardFilePaths: () => ipcRenderer.invoke("clipboard:file-paths"),
+
+  // 应用更新
+  getUpdateState: () => ipcRenderer.invoke("update:state"),
+  checkForUpdate: () => ipcRenderer.invoke("update:check"),
+  downloadUpdate: () => ipcRenderer.invoke("update:download"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  openDownloadedUpdate: () => ipcRenderer.invoke("update:open-downloaded"),
+  setUpdateBusy: (busy) => ipcRenderer.invoke("update:busy", busy),
 
   // 应用设置（持久化在主进程 userData/settings.json）
   getSettings: () => ipcRenderer.invoke("settings:get"),

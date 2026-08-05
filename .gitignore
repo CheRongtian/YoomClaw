@@ -12,6 +12,7 @@ Thumbs.db
 coverage/
 .next/
 out/
+release/
 
 # 本地测试脚本含明文凭据 / 错误日志，勿提交
 test-jimo.mjs
@@ -20,3 +21,6 @@ test-streaming.mjs
 
 # 智能体工作记忆（本地，非项目源码）
 .workbuddy/
+
+# Desktop packaging staging output
+apps/desktop/runtime/

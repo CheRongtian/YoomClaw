@@ -26,6 +26,8 @@ const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_HELPER_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 function helperPath(): string {
+  const configuredDir = process.env.YOOMCLAW_HELPER_DIR?.trim();
+  if (configuredDir) return path.join(configuredDir, "pdf_extract.py");
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "pdf_extract.py");
 }
 

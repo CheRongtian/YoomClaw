@@ -170,10 +170,12 @@ async function parseOfficeDocument(
   request: DocumentRequest,
   signal?: AbortSignal,
 ): Promise<DocumentReadResult> {
+  const configuredDir = process.env.YOOMCLAW_HELPER_DIR?.trim();
   const script = [
+    configuredDir ? path.join(configuredDir, "document_extract.py") : "",
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "document_extract.py"),
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "document_extract.py"),
-  ].find((candidate) => fsSync.existsSync(candidate));
+  ].filter(Boolean).find((candidate) => fsSync.existsSync(candidate));
   if (!script) throw new Error("文档解析 helper 缺失");
   const input = JSON.stringify({
     fileName,

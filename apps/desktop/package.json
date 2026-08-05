@@ -1,14 +1,19 @@
 {
   "name": "@yoomclaw/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "YoomClaw desktop client - Electron app",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "node start.cjs",
-    "start": "node start.cjs"
+    "start": "node start.cjs",
+    "test": "node --test src/*.test.cjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "electron-updater": "6.8.9",
+    "playwright-core": "1.62.1",
+    "ws": "8.21.1"
+  },
   "devDependencies": {
     "electron": "^33.0.0"
   }

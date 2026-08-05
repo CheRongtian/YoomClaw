@@ -28,6 +28,7 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const settingsStore = require("./settings.cjs");
 const { readClipboardFilePaths } = require("./clipboard.cjs");
+const { createUpdateManager } = require("./update-manager.cjs");
 
 // 单实例锁
 const gotLock = app.requestSingleInstanceLock();
@@ -44,6 +45,8 @@ let gatewayChild = null;
 let gatewayRestartTimer = null;
 let gatewayStopRequested = false;
 let windowSizeSaveTimer = null;
+let updateManager = null;
+let aiTaskActive = false;
 
 // 仓库根目录（apps/desktop/src -> YoomClaw/）
 const ROOT = nodePath.resolve(__dirname, "..", "..", "..");
@@ -63,6 +66,32 @@ const RENDERER_DEV_URL = process.env.CLAW_RENDERER_URL || "http://localhost:5173
 // 生产模式静态资源：vite build 产物（apps/desktop/renderer/dist）
 const STATIC_DIR = nodePath.join(__dirname, "..", "renderer", "dist");
 
+function defaultWorkspacePath() {
+  const workspace = isDev ? ROOT : nodePath.join(app.getPath("documents"), "YoomClaw");
+  try { fs.mkdirSync(workspace, { recursive: true }); } catch {}
+  return workspace;
+}
+
+function getWorkspacePath() {
+  const configured = settingsStore.load().workspace?.trim();
+  return configured || process.env.YOOMCLAW_WORKSPACE?.trim() || process.env.CLAW_WORKSPACE?.trim() || defaultWorkspacePath();
+}
+
+function getUpdateManager() {
+  if (!updateManager) {
+    updateManager = createUpdateManager({
+      app,
+      shell,
+      isDev,
+      onState: (state) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        mainWindow.webContents.send("update:state", state);
+      },
+    });
+  }
+  return updateManager;
+}
+
 // ===== Gateway 子进程 =====
 function resolveTsxCli() {
   const gwDir = nodePath.join(ROOT, "packages", "gateway");
@@ -81,29 +110,37 @@ function resolveTsxCli() {
 function startGateway() {
   if (gatewayChild) return;
   gatewayStopRequested = false;
-  const tsxCli = resolveTsxCli();
-  if (!tsxCli) {
-    console.error("[Gateway] 找不到 tsx，无法启动 Gateway 子进程（请先安装 tsx）");
-    return;
+  const workspace = getWorkspacePath();
+  const dataDir = nodePath.join(app.getPath("userData"), "YoomClaw");
+  const envFile = nodePath.join(ROOT, ".env");
+  const args = [];
+  let command = "node";
+  let cwd = ROOT;
+  let helperDir = nodePath.join(ROOT, "packages", "gateway");
+
+  if (isDev) {
+    const tsxCli = resolveTsxCli();
+    if (!tsxCli) {
+      console.error("[Gateway] 找不到 tsx，无法启动 Gateway 子进程（请先安装 tsx）");
+      return;
+    }
+    if (fs.existsSync(envFile)) args.push("--env-file=" + envFile);
+    args.push(tsxCli, "packages/gateway/src/bin.ts");
+  } else {
+    command = process.execPath;
+    cwd = workspace;
+    helperDir = nodePath.join(process.resourcesPath, "runtime-helpers");
+    args.push(nodePath.join(__dirname, "..", "runtime", "gateway.mjs"));
   }
 
-  const envFile = nodePath.join(ROOT, ".env");
-  const workspace = settingsStore.load().workspace
-    || process.env.YOOMCLAW_WORKSPACE
-    || process.env.CLAW_WORKSPACE
-    || ROOT;
-  const dataDir = nodePath.join(app.getPath("userData"), "YoomClaw");
-  const args = [
-    ...(fs.existsSync(envFile) ? ["--env-file=" + envFile] : []),
-    tsxCli,
-    "packages/gateway/src/bin.ts",
-  ];
   const gatewayEnv = {
     ...process.env,
     YOOMCLAW_WORKSPACE: workspace,
     CLAW_WORKSPACE: workspace,
     YOOMCLAW_DATA_DIR: dataDir,
+    YOOMCLAW_HELPER_DIR: helperDir,
   };
+  if (!isDev) gatewayEnv.ELECTRON_RUN_AS_NODE = "1";
 
   const e2eLogDir = E2E_LOG_DIR;
   const gatewayLogPath = e2eLogDir ? nodePath.join(e2eLogDir, "gateway.log") : null;
@@ -113,9 +150,9 @@ function startGateway() {
     try { fs.appendFileSync(gatewayLogPath, String(chunk), "utf8"); } catch {}
   };
 
-  console.log("[Gateway] 启动子进程:", "node", args.join(" "));
-  gatewayChild = spawn("node", args, {
-    cwd: ROOT,
+  console.log("[Gateway] 启动子进程:", command, args.join(" "));
+  gatewayChild = spawn(command, args, {
+    cwd,
     stdio: e2eLogDir ? ["ignore", "pipe", "pipe"] : "inherit",
     env: gatewayEnv,
     windowsHide: true,
@@ -235,8 +272,9 @@ function createWindow() {
     minWidth: 720,
     minHeight: 520,
     show: false,
-    frame: false,
-    titleBarStyle: "hidden",
+    frame: process.platform === "darwin",
+    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" } : {}),
+    ...(process.platform === "darwin" ? { trafficLightPosition: { x: 12, y: 10 } } : {}),
     alwaysOnTop: !!settings.alwaysOnTop,
     // 与渲染层默认主题（OpenCode dark）的 --bg 对齐，避免启动瞬间闪一下异色
     backgroundColor: "#0d0d0d",
@@ -415,6 +453,21 @@ ipcMain.handle("notify", async (_evt, payload) => {
   }
 });
 
+// ===== App updates =====
+
+ipcMain.handle("update:state", async () => getUpdateManager().getState());
+ipcMain.handle("update:check", async () => getUpdateManager().check());
+ipcMain.handle("update:download", async () => getUpdateManager().download());
+ipcMain.handle("update:install", async () => {
+  if (aiTaskActive) return false;
+  return getUpdateManager().install();
+});
+ipcMain.handle("update:open-downloaded", async () => getUpdateManager().openDownloaded());
+ipcMain.handle("update:busy", async (_evt, busy) => {
+  aiTaskActive = busy === true;
+  return aiTaskActive;
+});
+
 ipcMain.handle("hide-to-tray", async () => {
   mainWindow && mainWindow.hide();
   showTrayNotification("YoomClaw 已最小化到托盘", "仍在后台运行");
@@ -477,7 +530,7 @@ ipcMain.handle("settings:set", async (_evt, patch) => {
   return next;
 });
 
-ipcMain.handle("workspace:get", async () => settingsStore.load().workspace || ROOT);
+ipcMain.handle("workspace:get", async () => getWorkspacePath());
 
 ipcMain.handle("workspace:choose", async () => {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
@@ -543,6 +596,7 @@ app.whenReady().then(() => {
   createTray();
   // 启动时把持久化设置同步到系统层（开机自启等）
   applyRuntimeSettings(settingsStore.load());
+  getUpdateManager().start();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -566,8 +620,11 @@ app.on("window-all-closed", () => {
   // 不退出，保留托盘
 });
 
-app.on("before-quit", () => {
+function prepareForQuit() {
   isQuitting = true;
   persistWindowSize();
   stopGateway();
-});
+}
+
+app.on("before-quit-for-update", prepareForQuit);
+app.on("before-quit", prepareForQuit);

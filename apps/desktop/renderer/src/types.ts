@@ -22,3 +22,28 @@ export interface AppInfo {
   dataDir: string;
   isDev: boolean;
 }
+
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "manual-install-required"
+  | "not-available"
+  | "error";
+
+export interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  targetVersion?: string;
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+  downloadedPath?: string;
+  message: string;
+  platform: string;
+  arch: string;
+  enabled: boolean;
+}

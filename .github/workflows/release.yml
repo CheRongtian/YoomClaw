@@ -1,0 +1,130 @@
+name: Release desktop apps
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Windows release tag"
+        required: true
+        default: "v0.2.0"
+      mac_ref:
+        description: "macOS source branch"
+        required: true
+        default: "macos"
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "11.9.0"
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.ref }}' } else { '${{ github.ref_name }}' }
+          $expected = $tag -replace '^v', ''
+          $files = @('package.json', 'apps/desktop/package.json')
+          foreach ($file in $files) {
+            $version = (Get-Content -Raw $file | ConvertFrom-Json).version
+            if ($version -ne $expected) { throw "$file version $version does not match $expected" }
+          }
+
+      - name: Build Windows installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm package:win -- --publish never
+
+      - name: Publish Windows assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+          name: YoomClaw ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/*.exe
+            release/latest.yml
+            release/*.blockmap
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  macos:
+    name: macOS arm64
+    needs: windows
+    runs-on: macos-14
+    steps:
+      - name: Checkout macOS source branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.mac_ref || 'macos' }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate macOS release version
+        shell: bash
+        run: |
+          tag="${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}"
+          expected="${tag#v}"
+          for file in package.json apps/desktop/package.json; do
+            version=$(node -p "require('./$file').version")
+            test "$version" = "$expected" || { echo "$file version $version does not match $expected"; exit 1; }
+          done
+
+      - name: Build unsigned macOS arm64 package
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm package:mac -- --publish never
+
+      - name: Publish macOS assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/latest-mac.yml
+            release/*.blockmap
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -20,6 +20,7 @@ interface Props {
  */
 export default function WindowFrame({ children }: Props) {
   const claw = typeof window !== "undefined" ? window.yoomclaw : undefined;
+  const isMac = claw?.platform === "darwin";
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -46,7 +47,7 @@ export default function WindowFrame({ children }: Props) {
 
   return (
     <div className="window-frame">
-      <div className={`title-bar ${maximized ? "is-max" : ""}`}>
+      <div className={`title-bar ${maximized ? "is-max" : ""} ${isMac ? "mac" : ""}`}>
         <div
           className="tb-drag"
           onDoubleClick={() => claw?.toggleMaximize()}
@@ -58,7 +59,7 @@ export default function WindowFrame({ children }: Props) {
           <span className="tb-title">YoomClaw</span>
         </div>
 
-        <div className="tb-actions">
+        {!isMac && <div className="tb-actions">
           <button
             className="win-btn"
             data-testid="window-minimize"
@@ -86,7 +87,7 @@ export default function WindowFrame({ children }: Props) {
           >
             <WinCloseIcon />
           </button>
-        </div>
+        </div>}
       </div>
 
       <div className="window-body">{children}</div>
@@ -109,6 +110,9 @@ export default function WindowFrame({ children }: Props) {
           user-select: none;
           flex-shrink: 0;
         }
+        .title-bar.mac {
+          padding-left: 72px;
+        }
         /* 左侧品牌区同时是窗口拖拽区 */
         .tb-drag {
           flex: 1;
@@ -118,6 +122,9 @@ export default function WindowFrame({ children }: Props) {
           gap: 8px;
           padding-left: 12px;
           -webkit-app-region: drag;
+        }
+        .title-bar.mac .tb-drag {
+          padding-left: 12px;
         }
         .tb-logo {
           color: var(--primary);

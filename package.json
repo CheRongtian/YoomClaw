@@ -1,6 +1,6 @@
 {
   "name": "yoomclaw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A mini OpenClaw-like personal AI agent framework",
   "license": "MIT",
@@ -11,7 +11,12 @@
     "dev:gateway": "pnpm --filter @yoomclaw/gateway dev",
     "dev:desktop": "pnpm --filter @yoomclaw/desktop dev",
     "dev:all": "pnpm dev",
-    "build": "pnpm -r build",
+    "build": "pnpm -r build && pnpm build:desktop-runtime",
+    "build:desktop-runtime": "node scripts/build-desktop-runtime.mjs",
+    "build:desktop": "pnpm --filter @yoomclaw/desktop-renderer build && pnpm build:desktop-runtime && node scripts/prepare-desktop-app.mjs",
+    "package:dir": "pnpm build:desktop && node scripts/prepare-electron-unpacked.mjs && electron-builder --dir --prepackaged .tmp/electron-unpacked-win",
+    "package:win": "pnpm build:desktop && node scripts/prepare-electron-unpacked.mjs win && electron-builder --win --x64 --prepackaged .tmp/electron-unpacked-win",
+    "package:mac": "pnpm build:desktop && node scripts/prepare-electron-unpacked.mjs mac && electron-builder --mac --arm64 --prepackaged .tmp/electron-unpacked-mac/YoomClaw.app",
     "start": "pnpm --filter @yoomclaw/gateway start",
     "cli": "pnpm --filter @yoomclaw/cli start",
     "lint": "pnpm -r --if-present lint",
@@ -28,10 +33,76 @@
     "@types/node": "^22.10.0",
     "concurrently": "^9.1.0",
     "electron": "^33.4.11",
+    "electron-builder": "^26.15.3",
+    "electron-updater": "^6.8.9",
+    "esbuild": "^0.28.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "build": {
+    "appId": "com.yoomclaw.desktop",
+    "productName": "YoomClaw",
+    "directories": {
+      "app": ".tmp/desktop-app",
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/dist/**/*",
+      "runtime/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "npmRebuild": false,
+    "extraResources": [
+      {
+        "from": "packages/gateway/pdf_extract.py",
+        "to": "runtime-helpers/pdf_extract.py"
+      },
+      {
+        "from": "packages/gateway/document_extract.py",
+        "to": "runtime-helpers/document_extract.py"
+      }
+    ],
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "apps/desktop/assets/app-icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64"]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "apps/desktop/assets/app-icon.png",
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Alex-Wang-88",
+      "repo": "YoomClaw",
+      "releaseType": "release"
+    }
   }
 }
