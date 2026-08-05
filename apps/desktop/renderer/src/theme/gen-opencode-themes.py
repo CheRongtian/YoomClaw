@@ -36,6 +36,105 @@ BASE_MAP = {
     "--info": "info",
 }
 
+# A few upstream themes only define a dark palette (or repeat their dark
+# values for both modes). Keep their dark appearance, but provide a readable
+# light counterpart for YoomClaw's global light mode.
+LIGHT_CORE_OVERRIDES = {
+    "aura": {
+        "--bg": "#fbfaff",
+        "--bg-panel": "#f6f2ff",
+        "--bg-element": "#eee7ff",
+        "--border": "#d7c9ef",
+        "--border-subtle": "#e8def8",
+        "--border-active": "#805ad5",
+        "--text": "#2c2340",
+        "--text-muted": "#756b86",
+        "--primary": "#7c4dff",
+        "--secondary": "#c026a9",
+        "--accent": "#7c4dff",
+        "--error": "#d14343",
+        "--warning": "#a15c00",
+        "--success": "#16805a",
+        "--info": "#6655cc",
+    },
+    "ayu": {
+        "--bg": "#fafafa",
+        "--bg-panel": "#f3f4f5",
+        "--bg-element": "#e7e8e9",
+        "--border": "#cfd3d6",
+        "--border-subtle": "#e5e7e9",
+        "--border-active": "#55b4d4",
+        "--text": "#5c6166",
+        "--text-muted": "#8a9199",
+        "--primary": "#399ee6",
+        "--secondary": "#a37acc",
+        "--accent": "#e6b450",
+        "--error": "#d95757",
+        "--warning": "#b97800",
+        "--success": "#86b300",
+        "--info": "#399ee6",
+    },
+    "catppuccinfrappe": {
+        "--bg": "#eff1f5",
+        "--bg-panel": "#e6e9ef",
+        "--bg-element": "#ccd0da",
+        "--border": "#bcc0cc",
+        "--border-subtle": "#c6cad4",
+        "--border-active": "#8839ef",
+        "--text": "#4c4f69",
+        "--text-muted": "#7c7f93",
+        "--primary": "#1e66f5",
+        "--secondary": "#8839ef",
+        "--accent": "#8839ef",
+        "--error": "#d20f39",
+        "--warning": "#df8e1d",
+        "--success": "#40a02b",
+        "--info": "#04a5e5",
+    },
+    "catppuccinmacchiato": {
+        "--bg": "#eff1f5",
+        "--bg-panel": "#e6e9ef",
+        "--bg-element": "#ccd0da",
+        "--border": "#bcc0cc",
+        "--border-subtle": "#c6cad4",
+        "--border-active": "#8839ef",
+        "--text": "#4c4f69",
+        "--text-muted": "#7c7f93",
+        "--primary": "#1e66f5",
+        "--secondary": "#8839ef",
+        "--accent": "#8839ef",
+        "--error": "#d20f39",
+        "--warning": "#df8e1d",
+        "--success": "#40a02b",
+        "--info": "#04a5e5",
+    },
+    "lucentorng": {
+        "--bg": "#fffaf7",
+        "--bg-panel": "#fff5f0",
+        "--bg-element": "#ffebe2",
+        "--border": "#f0c5b1",
+        "--border-subtle": "#ead8d0",
+        "--border-active": "#c94d24",
+    },
+    "nightowl": {
+        "--bg": "#fbfbfb",
+        "--bg-panel": "#f4f4f5",
+        "--bg-element": "#eceef1",
+        "--border": "#d6d9df",
+        "--border-subtle": "#e5e7eb",
+        "--border-active": "#4876d6",
+        "--text": "#403f53",
+        "--text-muted": "#7a7f99",
+        "--primary": "#4876d6",
+        "--secondary": "#994cc3",
+        "--accent": "#994cc3",
+        "--error": "#c96765",
+        "--warning": "#c96765",
+        "--success": "#2aa298",
+        "--info": "#4876d6",
+    },
+}
+
 
 def lum(hex_color: str) -> float:
     h = hex_color.lstrip("#")
@@ -43,6 +142,10 @@ def lum(hex_color: str) -> float:
         h = h * 2
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def is_dark_hex(value: str) -> bool:
+    return value.startswith("#") and lum(value) < 140
 
 
 def resolve(value, defs, theme_obj, mode, seen=None):
@@ -72,18 +175,21 @@ def get(theme_obj, key, defs, mode, default="#000000"):
     return default
 
 
-def build_palette(theme_json, mode):
+def build_palette(theme_json, mode, theme_id=None):
     defs = theme_json.get("defs", {})
     theme_obj = theme_json.get("theme", {})
     p = {}
+    light_override = LIGHT_CORE_OVERRIDES.get(theme_id, {}) if mode == "light" else {}
 
     # 基础语义色
     for css_var, oc_key in BASE_MAP.items():
-        p[css_var] = get(theme_obj, oc_key, defs, mode)
+        p[css_var] = light_override.get(css_var, get(theme_obj, oc_key, defs, mode))
 
     # secondary 缺失时回退到 primary
     p["--text-secondary"] = p["--text"]
-    p["--secondary"] = get(theme_obj, "secondary", defs, mode, p["--primary"])
+    p["--secondary"] = light_override.get(
+        "--secondary", get(theme_obj, "secondary", defs, mode, p["--primary"])
+    )
     # text-dim 回退到 text-muted
     p["--text-dim"] = p["--text-muted"]
 
@@ -175,9 +281,15 @@ def main():
         tj = json.loads(f.read_text(encoding="utf-8"))
         tid = theme_id(f.name)
         vd, vl = f"{tid}Dark", f"{tid}Light"
-        out.append(format_palette(build_palette(tj, "dark"), vd))
+        dark_palette = build_palette(tj, "dark", tid)
+        light_palette = build_palette(tj, "light", tid)
+        if light_palette == dark_palette:
+            raise ValueError(f"{tid} has identical dark and light palettes")
+        if is_dark_hex(light_palette["--bg"]):
+            raise ValueError(f"{tid} has a dark background in its light palette")
+        out.append(format_palette(dark_palette, vd))
         out.append("")
-        out.append(format_palette(build_palette(tj, "light"), vl))
+        out.append(format_palette(light_palette, vl))
         out.append("")
         entries.append((tid, theme_name(f.name), vd, vl))
 
