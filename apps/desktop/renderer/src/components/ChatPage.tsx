@@ -285,6 +285,11 @@ export default function ChatPage() {
   ));
   const safetyModeRef = useRef<SafetyMode>("workspace-auto");
   safetyModeRef.current = safetyMode;
+  // The renderer may switch modes before the gateway finishes persisting the
+  // new mode. Runs and the HTTP workbench must observe the same permission.
+  const safetyModeSyncRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const runtimeConfigReadyRef = useRef<Promise<void>>(Promise.resolve());
+  const safetyModeTouchedRef = useRef(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const {
     state: updateState,
@@ -329,7 +334,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     let alive = true;
-    void fetch(`${apiBase}/api/config`)
+    const configRequest = fetch(`${apiBase}/api/config`)
       .then((res) => res.ok ? res.json() as Promise<{
         workspace?: string;
         safetyMode?: SafetyMode;
@@ -338,7 +343,11 @@ export default function ChatPage() {
       .then((config) => {
         if (!alive) return;
         if (config?.workspace) setWorkspace(config.workspace);
-        if (config?.safetyMode) setSafetyMode(normalizeSafetyMode(config.safetyMode));
+        if (config?.safetyMode && !safetyModeTouchedRef.current) {
+          const normalized = normalizeSafetyMode(config.safetyMode);
+          safetyModeRef.current = normalized;
+          setSafetyMode(normalized);
+        }
         // The Provider topic is the single source of static behavior rules.
         // Upgrade an older persisted local-mode setting when the chat opens so
         // the renderer never causes the full local prompt bundle to be sent.
@@ -351,6 +360,7 @@ export default function ChatPage() {
         }
       })
       .catch(() => {});
+    runtimeConfigReadyRef.current = configRequest.then(() => undefined, () => undefined);
     return () => {
       alive = false;
     };
@@ -817,7 +827,9 @@ export default function ChatPage() {
 
   useEffect(() => {
     localStorage.setItem(SAFETY_MODE_KEY, safetyMode);
-    sendSafetyMode(safetyMode);
+    void runtimeConfigReadyRef.current.then(() => {
+      sendSafetyMode(safetyModeRef.current);
+    });
   }, [safetyMode, sendSafetyMode]);
 
   useEffect(() => {
@@ -853,7 +865,9 @@ export default function ChatPage() {
     socket.onopen = () => {
       if (!isCurrentSocket()) return;
       setConnected(true);
-      sendSafetyMode(safetyModeRef.current);
+      void runtimeConfigReadyRef.current.then(() => {
+        if (isCurrentSocket()) sendSafetyMode(safetyModeRef.current);
+      });
       void refreshSessions();
     };
     socket.onmessage = (e) => {
@@ -1126,13 +1140,29 @@ export default function ChatPage() {
   }, [commitLive, currentSessionId]);
 
   const selectSafetyMode = useCallback((mode: SafetyMode) => {
+    safetyModeTouchedRef.current = true;
+    safetyModeRef.current = mode;
     setSafetyMode(mode);
     setModeMenuOpen(false);
-    void fetch(`${apiBase}/api/config`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ safetyMode: mode }),
-    }).catch(() => {});
+    const previous = safetyModeSyncRef.current;
+    const sync = previous
+      .catch(() => true)
+      .then(async () => {
+        const response = await fetch(`${apiBase}/api/config`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ safetyMode: mode }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return true;
+      })
+      .catch(() => false);
+    safetyModeSyncRef.current = sync;
+    void sync.then((ok) => {
+      if (!ok && safetyModeRef.current === mode) {
+        setRunNotice("权限模式同步失败，请重试后再发送任务。");
+      }
+    });
   }, [apiBase]);
 
   /** 空状态建议 chip：先建会话，再把提示词预填进输入框 */
@@ -1158,6 +1188,11 @@ export default function ChatPage() {
       const initialSocket = wsRef.current;
       if (!initialSocket || initialSocket.readyState !== WebSocket.OPEN) {
         console.warn("WebSocket 未连接，无法发送");
+        return false;
+      }
+      await runtimeConfigReadyRef.current;
+      if (!(await safetyModeSyncRef.current)) {
+        setRunNotice("权限模式尚未同步到后端，请重试后再发送任务。");
         return false;
       }
       const sendRevision = ++sessionViewRevisionRef.current;
@@ -1494,6 +1529,10 @@ export default function ChatPage() {
         }
       }
       if (!isSendStillCurrent()) return false;
+      if (!(await safetyModeSyncRef.current)) {
+        setRunNotice("权限模式尚未同步到后端，请重试后再发送任务。");
+        return false;
+      }
       const activeSocket = wsRef.current;
       if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) {
         setRunNotice("WebSocket disconnected; please retry.");

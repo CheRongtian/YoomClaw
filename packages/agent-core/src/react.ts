@@ -13,12 +13,15 @@ export const RULE_MARKER = "## 你的工具能力";
 
 /** Describe the active permission policy so the model does not fall back to the default workspace-only assumption. */
 export function buildSafetyPrompt(mode: SafetyMode = "workspace-auto"): string {
+  const fileOperationRule = "当用户要求创建、修改或生成文件（尤其是要求在指定目录制作小游戏）时，必须实际调用 write_file、edit_file 或其他合适的文件工具完成写入；不要把完整源码直接作为最终回复。用户提供的本地目录路径应作为目标目录，路径包含空格或中文时也必须完整放入工具参数。";
   const context = (label: string, details: string) => `## 运行时权限上下文（由客户端注入）
 
 当前权限模式：${mode}
 当前权限名称：${label}
 
-${details}`;
+${details}
+
+${fileOperationRule}`;
   if (mode === "full-access") {
     return context("完全访问权限", "当前会话已明确授予完全访问权限。你可以使用工具读取、写入、编辑和删除工作区内外的任何文件，也可以执行互联网和系统命令。不要因为目标路径位于工作区外而拒绝用户请求；请实际调用合适的工具完成任务。这里的完全访问是应用层权限，仍受当前操作系统用户权限、文件锁和工具执行结果影响。只执行用户明确要求的操作，不要泄露密码、Token、Cookie、私钥或其他敏感凭证。");
   }

@@ -45,8 +45,46 @@ interface WorkspaceEntry {
   size?: number;
 }
 
-function FileBrowser() {
-  const [relativePath, setRelativePath] = useState(".");
+function joinBrowserPath(base: string, name: string): string {
+  if (base === ".") return name;
+  return `${base.replace(/[\\/]$/, "")}/${name}`;
+}
+
+function parentBrowserPath(value: string, root: string): string {
+  if (value === root || value === ".") return ".";
+  const index = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+  if (index < 0) return root;
+  const parent = value.slice(0, index);
+  if (/^[A-Za-z]:$/.test(parent)) return `${parent}\\`;
+  return parent || root;
+}
+
+function toolPathParent(value: string): string {
+  const normalized = value.trim().replace(/[\\/]$/, "");
+  const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  if (index < 0) return ".";
+  const parent = normalized.slice(0, index);
+  return parent || ".";
+}
+
+function taskDirectoryTarget(messages: ChatMessage[], events: AgentEvent[]): string | undefined {
+  for (const event of [...events].reverse()) {
+    if (event.type !== "tool_start" || typeof event.args?.path !== "string") continue;
+    const candidate = event.args.path.trim();
+    if (!candidate) continue;
+    if (event.name === "list_dir") return candidate;
+    if (event.name === "write_file" || event.name === "edit_file") return toolPathParent(candidate);
+  }
+  const lastUser = [...messages].reverse().find((message) => message.role === "user");
+  const folderAttachment = lastUser?.localPaths?.find((candidate) =>
+    candidate.trim() && !/[\\/][^\\/]+\.[^\\/]+$/.test(candidate.trim()),
+  );
+  return folderAttachment?.trim() || undefined;
+}
+
+function FileBrowser({ initialPath = "." }: { initialPath?: string }) {
+  const rootPath = initialPath || ".";
+  const [relativePath, setRelativePath] = useState(rootPath);
   const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
   const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -75,7 +113,7 @@ function FileBrowser() {
   }, [relativePath]);
 
   const openEntry = (entry: WorkspaceEntry) => {
-    const nextPath = relativePath === "." ? entry.name : `${relativePath}/${entry.name}`;
+    const nextPath = joinBrowserPath(relativePath, entry.name);
     setSelectedPath(nextPath);
     if (entry.type === "directory") {
       previewRequestRef.current += 1;
@@ -100,15 +138,13 @@ function FileBrowser() {
       });
   };
 
-  const parentPath = relativePath === "."
-    ? "."
-    : relativePath.split(/[\\/]/).slice(0, -1).join("/") || ".";
+  const parentPath = parentBrowserPath(relativePath, rootPath);
 
   return (
     <section className="file-browser">
       <div className="section-head"><span className="section-title"><FolderIcon size={14} /><span>工作区文件</span></span><span className="section-count">{entries.length}</span></div>
       <div className="file-path-row">
-        <button type="button" className="file-back" data-testid="workbench-back" disabled={relativePath === "."} onClick={() => setRelativePath(parentPath)} aria-label="返回上一级" title="返回上一级"><ChevronLeftIcon size={14} /></button>
+        <button type="button" className="file-back" data-testid="workbench-back" disabled={relativePath === rootPath} onClick={() => setRelativePath(parentPath)} aria-label="返回上一级" title="返回上一级"><ChevronLeftIcon size={14} /></button>
         <span title={relativePath}>{shortPath(relativePath)}</span>
       </div>
       {error && <div className="file-error">{error}</div>}
@@ -116,7 +152,7 @@ function FileBrowser() {
         {entries.length === 0 && !error ? <div className="empty-section"><CircleIcon size={12} />目录为空。</div> : entries.map((entry) => (
           <button
             type="button"
-            className={`file-entry ${selectedPath === (relativePath === "." ? entry.name : `${relativePath}/${entry.name}`) ? "selected" : ""}`}
+            className={`file-entry ${selectedPath === joinBrowserPath(relativePath, entry.name) ? "selected" : ""}`}
             data-testid={`workbench-entry-${entry.name}`}
             key={entry.name}
             onClick={() => openEntry(entry)}
@@ -279,6 +315,7 @@ export default function WorkbenchPanel({
     .slice()
     .reverse()
     .find((message) => message.role === "user");
+  const targetPath = taskDirectoryTarget(messages, runEvents);
 
   const copyWorkspace = async () => {
     if (!workspace || !navigator.clipboard) return;
@@ -314,10 +351,10 @@ export default function WorkbenchPanel({
           <span className="task-id">当前会话</span>
         </div>
         <div className="task-name" title={sessionTitle}>{sessionTitle || "未命名任务"}</div>
-        <div className="workspace-path" title={workspace}>{shortPath(workspace || "未选择工作区")}</div>
+        <div className="workspace-path" title={targetPath || workspace}>{shortPath(targetPath || workspace || "未选择工作区")}</div>
       </section>
 
-        <FileBrowser key={`file:${workspace}`} />
+        <FileBrowser key={`file:${workspace}:${targetPath || ""}`} initialPath={targetPath || "."} />
         <GitPanel key={`git:${workspace}`} />
 
       <section className="section action-section">

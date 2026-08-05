@@ -45,4 +45,6 @@ test("full-access prompt tells the model to operate outside the workspace", () =
   assert.match(prompt, /当前权限模式：full-access/);
   assert.match(prompt, /工作区内外/);
   assert.match(prompt, /不要因为目标路径位于工作区外而拒绝/);
+  assert.match(prompt, /必须实际调用 write_file、edit_file/);
+  assert.match(prompt, /不要把完整源码直接作为最终回复/);
 });

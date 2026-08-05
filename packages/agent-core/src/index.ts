@@ -997,7 +997,7 @@ function appendLocalPathContext(
   const context = [
     "[本地附件路径（来自桌面客户端）]",
     ...localPaths.map((localPath) => `- ${localPath}`),
-    "这些路径对应用户选择的本地文件。需要对附件执行文件操作时，请使用完整路径作为工具 path 参数。",
+    "这些路径来自用户在桌面客户端选择的本地文件或目录。若用户要求在其中创建或修改内容，请把它当作目标目录，先用 list_dir 确认，再必须调用 write_file、edit_file 或其他文件工具实际写入；不要把完整源码直接作为最终回复。需要执行文件操作时，请使用完整路径作为工具 path 参数。",
   ].join("\n");
   if (typeof content === "string") return `${context}\n\n${content}`;
   return [{ type: "text", text: context }, ...content];
