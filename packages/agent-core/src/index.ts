@@ -498,7 +498,6 @@ export class Agent implements AgentEngine {
     const allowDynamicTool = (name: string) => name.startsWith("mcp.") && Boolean(this.runtime.services?.mcp);
     const promptStore = this.runtime.promptStore!;
     const needsBootstrap =
-      this.config.mode !== "legacy" &&
       this.config.promptMode === "local" &&
       session.meta?.hermesPromptInitialized !== true;
     const initialPrompt = needsBootstrap
@@ -521,7 +520,7 @@ export class Agent implements AgentEngine {
     // prompt can resolve {{safetyMode}} on every client run.
     if (!needsBootstrap) {
       providerMessage = withSafetyContext(providerMessage, safetyMode);
-      if (this.config.promptMode === "provider" && this.config.mode !== "legacy") {
+      if (this.config.promptMode === "provider") {
         const runtimeToolsPrompt = buildToolPrompt(defs);
         providerMessage = typeof providerMessage.content === "string"
           ? { ...providerMessage, content: `${runtimeToolsPrompt}\n${providerMessage.content}` }
@@ -531,9 +530,6 @@ export class Agent implements AgentEngine {
             };
       }
     }
-    const legacyPrompt = this.config.mode === "legacy"
-      ? `${buildToolPrompt(defs)}\n${textFromMessage(providerMessage)}`
-      : "";
     let finalText = "";
     let round = 0;
     let pendingCall: ParsedToolCall | null = null;
@@ -569,23 +565,16 @@ export class Agent implements AgentEngine {
                     ? initialPrompt
                     : [{ type: "text", text: initialPrompt }, ...providerMessage.content],
               }
-            : round === 1 && this.config.mode === "legacy"
-              ? {
-                  role: "user",
-                  content: Array.isArray(providerMessage.content)
-                    ? [{ type: "text", text: legacyPrompt }, ...providerMessage.content]
-                    : legacyPrompt,
-                }
-              : round === 1
-              ? providerMessage
-              : {
-                role: "user",
-                content: this.promptAssembler.buildToolResultPrompt({
-                    toolName: pendingCall!.tool,
-                    result: pendingResult,
-                    isError: pendingIsError,
-                  }),
-                };
+            : round === 1
+            ? providerMessage
+            : {
+              role: "user",
+              content: this.promptAssembler.buildToolResultPrompt({
+                  toolName: pendingCall!.tool,
+                  result: pendingResult,
+                  isError: pendingIsError,
+                }),
+              };
 
         let modelText = "";
         const inferredCall = round === 1 ? inferExplicitLocalFileCall(userMessage) : null;
@@ -879,7 +868,7 @@ export class Agent implements AgentEngine {
     input: string | ChatMessage,
     finalText: string,
   ): Promise<void> {
-    if (this.config.mode === "legacy" || !this.runtime.memoryStore) return;
+    if (!this.runtime.memoryStore) return;
 
     const userText = sanitizeReviewText(
       typeof input === "string" ? input : textFromMessage(input),

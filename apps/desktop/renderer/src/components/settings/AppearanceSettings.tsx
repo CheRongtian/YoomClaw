@@ -20,8 +20,10 @@ export default function AppearanceSettings() {
         {MODES.map(({ value, label, Icon }) => (
           <button
             key={value}
+            type="button"
             className={`mode-opt ${mode === value ? "active" : ""}`}
             data-testid={`appearance-mode-${value}`}
+            aria-pressed={mode === value}
             onClick={() => setMode(value)}
           >
             <Icon size={15} />
@@ -52,8 +54,10 @@ export default function AppearanceSettings() {
           return (
             <button
               key={t.id}
+              type="button"
               className={`theme-card ${active ? "active" : ""}`}
               data-testid={`appearance-theme-${t.id}`}
+              aria-pressed={active}
               onClick={() => setThemeId(t.id)}
             >
               <span className="tc-name">{t.name}</span>
@@ -69,12 +73,11 @@ export default function AppearanceSettings() {
 
       <style jsx>{`
         .grp-title {
-          font-size: 11px;
+          font-size: 11.5px;
           font-weight: 600;
-          letter-spacing: 0.6px;
-          text-transform: uppercase;
+          letter-spacing: 0.3px;
           color: var(--text-muted);
-          margin: 18px 0 9px;
+          margin: 22px 0 10px;
           display: flex;
           align-items: center;
           gap: 6px;
@@ -100,12 +103,14 @@ export default function AppearanceSettings() {
           align-items: center;
           justify-content: center;
           gap: 6px;
-          padding: 9px 6px;
-          border-radius: 8px;
+          min-height: 38px;
+          padding: 9px 8px;
+          border-radius: 9px;
           border: 1px solid var(--border);
           background: var(--bg-panel);
           color: var(--text-secondary);
           font-size: 12.5px;
+          font-weight: 500;
           transition: border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard);
         }
         .mode-opt:hover {
@@ -129,12 +134,14 @@ export default function AppearanceSettings() {
           display: flex;
           align-items: center;
           gap: 6px;
+          min-height: 38px;
           padding: 9px 11px;
-          border-radius: 8px;
+          border-radius: 9px;
           border: 1px solid var(--border);
           background: var(--bg-panel);
           color: var(--text-secondary);
           font-size: 12.5px;
+          font-weight: 500;
           text-align: left;
           transition: border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard);
         }

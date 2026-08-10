@@ -296,7 +296,6 @@ async function startGateway(options: CliOptions): Promise<GatewayHandle> {
       GATEWAY_PORT: String(port),
       YOOMCLAW_WORKSPACE: options.root,
       YOOMCLAW_DATA_DIR: dataDir,
-      YOOMCLAW_AGENT_MODE: "hermes",
       YOOMCLAW_PROMPT_MODE: "provider",
       YOOMCLAW_AUTO_MEMORY_REVIEW: "false",
       YOOMCLAW_TOOLSETS: "coding,browser",

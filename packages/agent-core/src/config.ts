@@ -128,12 +128,6 @@ export function loadRuntimeConfig(
     "orchestration",
     ...(computerEnabled ? ["computer"] : []),
   ]) as RuntimeConfig["toolsets"];
-  const persistedMode = persisted.mode === "legacy" || persisted.mode === "hermes"
-    ? persisted.mode
-    : undefined;
-  const envMode = env.YOOMCLAW_AGENT_MODE === "legacy" || env.YOOMCLAW_AGENT_MODE === "hermes"
-    ? env.YOOMCLAW_AGENT_MODE
-    : undefined;
   const persistedSafety = persisted.safetyMode === "confirm" || persisted.safetyMode === "workspace-auto" || persisted.safetyMode === "full-access"
     ? persisted.safetyMode
     : undefined;
@@ -151,9 +145,6 @@ export function loadRuntimeConfig(
     : undefined;
   const envAutoMemoryReview = env.YOOMCLAW_AUTO_MEMORY_REVIEW === "true";
   return {
-    mode:
-      overrides.mode ??
-      (envMode === "legacy" ? "legacy" : persistedMode ?? envMode ?? "hermes"),
     promptMode:
       overrides.promptMode ??
       persistedPromptMode ??

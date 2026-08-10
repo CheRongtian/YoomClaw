@@ -373,8 +373,6 @@ export interface AgentConfig {
   enabledTools?: string[];
   /** Enabled Hermes-style toolsets. */
   toolsets?: ToolsetId[];
-  /** Prompt-driven agent engine. */
-  mode?: "legacy" | "hermes";
   /** Where the main agent's behavior prompt is maintained. */
   promptMode?: "provider" | "local";
   /** Run the separate provider-backed memory review after successful tasks. */
@@ -390,7 +388,6 @@ export interface AgentConfig {
 // ===== Hermes-style runtime/config types =====
 
 export interface RuntimeConfig {
-  mode: "legacy" | "hermes";
   promptMode: "provider" | "local";
   autoMemoryReview: boolean;
   workspace: string;

@@ -294,7 +294,6 @@ export class Gateway {
     this.agent = new Agent(
       {
         ...config.agentConfig,
-        mode: config.agentConfig.mode ?? this.runtime.mode,
         promptMode: config.agentConfig.promptMode ?? this.runtime.promptMode,
         autoMemoryReview: config.agentConfig.autoMemoryReview ?? this.runtime.autoMemoryReview,
         toolsets: config.agentConfig.toolsets ?? this.runtime.toolsets,
@@ -1265,25 +1264,15 @@ export class Gateway {
 
   private publicConfig(): Record<string, unknown> {
     return {
-      agent: {
-        id: "main",
-        provider: this.config.agentConfig.provider,
-        model: this.config.agentConfig.model,
-      },
-      mode: this.runtime.mode,
       promptMode: this.runtime.promptMode,
       autoMemoryReview: this.runtime.autoMemoryReview,
       workspace: this.runtime.workspace,
-      dataDir: this.runtime.dataDir,
       toolsets: this.runtime.toolsets,
       safetyMode: this.runtime.safetyMode,
       browserCdpUrl: this.runtime.browserCdpUrl,
       computerEnabled: this.runtime.computerEnabled,
       browser: this.browser.status(),
       computer: this.computer.status(),
-      imageHostConfigured: Boolean(this.imageHost),
-      searchConfigured: Boolean(process.env.YOOMCLAW_SEARCH_URL),
-      mcpConfigured: Boolean(process.env.YOOMCLAW_MCP_URL),
       prompts: {
         global: this.promptStore.readGlobalPrompt(),
         user: this.promptStore.readUserProfile(),
@@ -1293,11 +1282,6 @@ export class Gateway {
   }
 
   private updateRuntimeConfig(patch: Record<string, unknown>): void {
-    if (patch.mode === "legacy" || patch.mode === "hermes") {
-      this.runtime.mode = patch.mode;
-      this.config.agentConfig.mode = patch.mode;
-      this.agent.config.mode = patch.mode;
-    }
     if (patch.promptMode === "provider" || patch.promptMode === "local") {
       this.runtime.promptMode = patch.promptMode;
       this.config.agentConfig.promptMode = patch.promptMode;
@@ -1352,7 +1336,6 @@ export class Gateway {
       const file = pathModule.join(this.runtime.dataDir, "config.json");
       fs.mkdirSync(pathModule.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify({
-        mode: this.runtime.mode,
         promptMode: this.runtime.promptMode,
         autoMemoryReview: this.runtime.autoMemoryReview,
         workspace: this.runtime.workspace,

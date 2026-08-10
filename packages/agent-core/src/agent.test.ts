@@ -122,7 +122,6 @@ test("Hermes Agent bootstraps prompts once and persists run events", async () =>
     {
       provider: "scripted",
       model: "test",
-      mode: "hermes",
       promptMode: "local",
       toolsets: ["coding"],
     },
@@ -169,7 +168,6 @@ test("full-access Agent can move a file outside the workspace to the trash witho
     {
       provider: "delete-file",
       model: "test",
-      mode: "hermes",
       promptMode: "provider",
       toolsets: ["coding"],
     },
@@ -228,7 +226,6 @@ test("attached-file delete recovers from a leaked tool protocol draft", async ()
     {
       provider: "leaking-delete",
       model: "test",
-      mode: "hermes",
       promptMode: "provider",
       toolsets: ["coding"],
     },
@@ -285,7 +282,6 @@ test("provider prompt mode sends the task without a local bootstrap or review re
     {
       provider: "scripted",
       model: "test",
-      mode: "hermes",
       promptMode: "provider",
       autoMemoryReview: false,
       toolsets: ["coding"],
@@ -324,7 +320,6 @@ test("agent context reaches the provider but stays out of visible session histor
     {
       provider: "scripted",
       model: "test",
-      mode: "hermes",
       promptMode: "provider",
       autoMemoryReview: false,
       toolsets: ["coding"],
@@ -375,7 +370,6 @@ test("hosted image parts are forwarded to the main provider", async () => {
     {
       provider: "image-scripted",
       model: "test",
-      mode: "hermes",
       promptMode: "provider",
       autoMemoryReview: false,
     },
@@ -421,7 +415,6 @@ test("agent surfaces a non-empty fallback for a successful empty provider respon
     {
       provider: "empty-response",
       model: "test",
-      mode: "hermes",
       promptMode: "provider",
       autoMemoryReview: false,
     },
@@ -446,7 +439,6 @@ test("agent does not expose an unavailable provider tool request as the final an
     {
       provider: "unknown-tool",
       model: "test",
-      mode: "hermes",
       promptMode: "provider",
       autoMemoryReview: false,
       toolsets: ["planning"],

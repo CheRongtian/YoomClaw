@@ -40,7 +40,7 @@ test("Gateway sends image data URLs to the image host before the main agent run"
     port: 0,
     workspace: root,
     dataDir: path.join(root, "data"),
-    agentConfig: { provider: "jimo", model: "test", mode: "hermes" },
+    agentConfig: { provider: "jimo", model: "test" },
     jimoConfig: {
       baseUrl: "https://example.test",
       shareId: "main-share",

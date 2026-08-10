@@ -285,7 +285,6 @@ async function main() {
         CLAW_RENDERER_URL: `http://127.0.0.1:${rendererPort}`,
         GATEWAY_HOST: "127.0.0.1",
         GATEWAY_PORT: "18789",
-        YOOMCLAW_AGENT_MODE: "hermes",
         YOOMCLAW_PROMPT_MODE: "provider",
         YOOMCLAW_AUTO_MEMORY_REVIEW: "false",
         YOOMCLAW_TOOLSETS: "coding,browser",

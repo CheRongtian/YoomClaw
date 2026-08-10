@@ -29,7 +29,7 @@ async function startTestGateway(): Promise<{ gateway: Gateway; base: string }> {
     port: 0,
     workspace: root,
     dataDir: path.join(root, "data"),
-    agentConfig: { provider: "jimo", model: "test", mode: "hermes" },
+    agentConfig: { provider: "jimo", model: "test" },
     jimoConfig: {
       baseUrl: "https://example.test",
       shareId: "main-share",
@@ -229,7 +229,7 @@ test("Gateway resolves local image paths under the active safety boundary", asyn
     port: 0,
     workspace: root,
     dataDir: path.join(root, "data"),
-    agentConfig: { provider: "jimo", model: "test", mode: "hermes" },
+    agentConfig: { provider: "jimo", model: "test" },
     jimoConfig: {
       baseUrl: "https://example.test",
       shareId: "main-share",

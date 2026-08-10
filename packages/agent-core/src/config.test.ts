@@ -58,17 +58,18 @@ test("prompt store keeps project rules in the selected workspace", () => {
   assert.match(store.readProjectPrompt(), /Run tests/);
 });
 
-test("runtime config restores persisted Hermes settings", () => {
+test("runtime config restores persisted settings and ignores the obsolete agent mode", () => {
   const root = tempDir();
   const dataDir = path.join(root, "data");
   fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(path.join(dataDir, "config.json"), JSON.stringify({
-    mode: "hermes",
+    mode: "legacy",
     toolsets: ["coding", "browser"],
     safetyMode: "confirm",
     browserCdpUrl: "http://127.0.0.1:9333",
   }));
   const config = loadRuntimeConfig({}, { workspace: root, dataDir });
+  assert.equal("mode" in config, false);
   assert.deepEqual(config.toolsets, ["coding", "browser"]);
   assert.equal(config.safetyMode, "confirm");
   assert.equal(config.promptMode, "provider");
@@ -79,7 +80,7 @@ test("runtime config restores persisted Hermes settings", () => {
     YOOMCLAW_AGENT_MODE: "legacy",
     YOOMCLAW_SAFETY_MODE: "workspace-auto",
   }, { workspace: root, dataDir });
-  assert.equal(rollback.mode, "legacy");
+  assert.equal("mode" in rollback, false);
   assert.equal(rollback.safetyMode, "confirm");
 
   const envSafety = loadRuntimeConfig({ YOOMCLAW_SAFETY_MODE: "workspace-auto" }, {
