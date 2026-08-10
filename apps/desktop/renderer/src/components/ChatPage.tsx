@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, useCallback } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type {
   ChatMessage,
@@ -519,8 +519,8 @@ export default function ChatPage() {
     [apiBase],
   );
 
-  const createSession = useCallback(async () => {
-    if (sessionCreationRef.current) return;
+  const createSession = useCallback(async (): Promise<string | null> => {
+    if (sessionCreationRef.current) return null;
     sessionCreationRef.current = true;
     const previousSessionId = currentSessionIdRef.current;
     const creationRevision = ++sessionViewRevisionRef.current;
@@ -565,7 +565,7 @@ export default function ChatPage() {
         creationRevision !== sessionViewRevisionRef.current ||
         currentSessionIdRef.current !== null
       ) {
-        return;
+        return null;
       }
       sessionViewRevisionRef.current += 1;
       currentSessionIdRef.current = session.id;
@@ -577,6 +577,7 @@ export default function ChatPage() {
       setPlan(null);
       setRunNotice(null);
       setEditTargetIndex(null);
+      return session.id;
     } catch (err) {
       console.error("Failed to load session:", err);
       if (
@@ -590,6 +591,7 @@ export default function ChatPage() {
       } else if (creationRevision === sessionViewRevisionRef.current) {
         setRunNotice("Session creation failed; please retry.");
       }
+      return null;
     } finally {
       sessionCreationRef.current = false;
       setCreatingSession(false);
@@ -930,7 +932,11 @@ export default function ChatPage() {
   };
 
   const applyEvent = useCallback((ev: AgentEvent) => {
-    pendingRunEventsRef.current.push(ev);
+    // Delta/progress events are transient render state. Keeping every token in
+    // runEvents makes each frame copy and re-scan an ever-growing array.
+    if (ev.type !== "delta" && ev.type !== "progress") {
+      pendingRunEventsRef.current.push(ev);
+    }
     const l = ensureLive(liveRef.current);
     let next: LiveAssistant;
     switch (ev.type) {
@@ -998,17 +1004,6 @@ export default function ChatPage() {
         break;
       case "browser":
         next = { ...l, progress: { name: `浏览器${ev.status}`, percent: 0 } };
-        break;
-      case "vision":
-        next = {
-          ...l,
-          progress: {
-            name: ev.status === "error"
-              ? `识图失败：${ev.message ?? "未知错误"}`
-              : `识图${ev.status === "started" ? "中" : "完成"}`,
-            percent: ev.status === "completed" ? 100 : 0,
-          },
-        };
         break;
       case "plan":
         setPlan(ev.plan);
@@ -1183,12 +1178,16 @@ export default function ChatPage() {
 
   const sendMessage = useCallback(
     async (text: string, files: ComposeAttachment[], inheritedLocalPaths: string[] = []) => {
-      const sessionIdAtStart = currentSessionIdRef.current;
-      if (!sessionIdAtStart || streaming || runIdRef.current) return false;
+      if (streaming || runIdRef.current) return false;
       const initialSocket = wsRef.current;
       if (!initialSocket || initialSocket.readyState !== WebSocket.OPEN) {
         console.warn("WebSocket 未连接，无法发送");
         return false;
+      }
+      let sessionIdAtStart = currentSessionIdRef.current;
+      if (!sessionIdAtStart) {
+        sessionIdAtStart = await createSession();
+        if (!sessionIdAtStart) return false;
       }
       await runtimeConfigReadyRef.current;
       if (!(await safetyModeSyncRef.current)) {
@@ -1587,7 +1586,7 @@ export default function ChatPage() {
       setStreaming(true);
       return true;
     },
-    [streaming, apiBase, editTargetIndex, currentMessages],
+    [streaming, apiBase, editTargetIndex, currentMessages, createSession],
   );
 
   const retryAssistantMessage = useCallback((assistantIndex: number) => {
@@ -1656,15 +1655,15 @@ export default function ChatPage() {
     ? `${live.text.length}:${live.tools.length}:${live.progress?.percent ?? -1}`
     : "idle";
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!shouldAutoScrollRef.current) return;
-    const frame = window.requestAnimationFrame(() => {
-      if (!shouldAutoScrollRef.current) return;
-      const anchor = messagesEndRef.current;
-      const stream = anchor?.parentElement;
-      if (stream) stream.scrollTop = stream.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(frame);
+    const anchor = messagesEndRef.current;
+    const stream = anchor?.parentElement;
+    if (!stream) return;
+    const targetScrollTop = stream.scrollHeight - stream.clientHeight;
+    if (stream.scrollTop !== targetScrollTop) {
+      stream.scrollTop = targetScrollTop;
+    }
   }, [currentMessages, liveScrollKey]);
 
   // 托盘菜单的"设置"入口
@@ -1867,7 +1866,7 @@ export default function ChatPage() {
           <ComposeBar
             onSend={sendMessage}
             onStop={stopStreaming}
-            ready={Boolean(currentSessionId) && connected && !creatingSession}
+            ready={connected && !creatingSession}
             creating={creatingSession}
             streaming={streaming}
             prefill={prefill}

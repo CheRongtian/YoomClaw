@@ -38,6 +38,7 @@ import {
   MemoryStore,
   SkillStore,
   ChromeCdpController,
+  WindowsComputerUseController,
   loadRuntimeConfig,
   resolveInWorkspace,
   type BuiltinTool,
@@ -52,7 +53,6 @@ import {
   dataUrlMimeType,
   isHostableDataUrl,
   JimoProvider,
-  JimoVisionProvider,
   type ImageHostConfig,
 } from "@yoomclaw/llm-provider";
 import {
@@ -84,7 +84,7 @@ import type {
   ToolsetId,
 } from "@yoomclaw/protocol";
 import type { AgentConfig } from "@yoomclaw/protocol";
-import { AttachmentStore, createDocumentService, createHttpMcpService, createVisionService } from "./advanced-services.js";
+import { AttachmentStore, createDocumentService, createHttpMcpService } from "./advanced-services.js";
 
 // ===== Gateway Config =====
 
@@ -105,13 +105,7 @@ export interface GatewayConfig {
   staticDir?: string;
   /** Hermes-style runtime overrides. */
   runtime?: Partial<RuntimeConfig>;
-  /** Optional second Jimo robot used for image/OCR preprocessing. */
-  visionConfig?: {
-    baseUrl: string;
-    shareId: string;
-    authorization: string;
-  };
-  /** Existing self-hosted image host used before the vision bot. */
+  /** Existing self-hosted image host used to expose local images as HTTPS URLs. */
   imageHostConfig?: ImageHostConfig;
 }
 
@@ -148,6 +142,7 @@ export class Gateway {
   private memoryStore: MemoryStore;
   private skillStore: SkillStore;
   private browser: ChromeCdpController;
+  private computer: WindowsComputerUseController;
   private imageHost?: ImageHostClient;
   private pdfReader: LocalPdfReader;
   private attachments: AttachmentStore;
@@ -207,7 +202,7 @@ export class Gateway {
     let finalText = "";
     const errors: string[] = [];
     const supportedToolsets: ToolsetId[] = [
-      "coding", "memory", "skills", "browser", "vision", "planning", "web",
+      "coding", "memory", "skills", "browser", "planning", "web",
       "execution", "orchestration", "mcp", "computer",
     ];
     const inheritedToolsets = this.agent.config.toolsets ?? this.runtime.toolsets;
@@ -263,6 +258,9 @@ export class Gateway {
     this.memoryStore = new MemoryStore(this.runtime.workspace, this.runtime.dataDir);
     this.skillStore = new SkillStore(this.runtime.workspace, this.runtime.dataDir);
     this.browser = new ChromeCdpController(this.runtime.dataDir, this.runtime.browserCdpUrl);
+    this.computer = new WindowsComputerUseController(this.runtime.dataDir, {
+      enabled: this.runtime.computerEnabled,
+    });
     this.sessions = new SessionStore(
       new FileSessionRepository(this.runtime.dataDir, this.runtime.workspace),
       this.runtime.workspace,
@@ -271,17 +269,12 @@ export class Gateway {
     this.attachments = new AttachmentStore();
 
     const provider = new JimoProvider(config.jimoConfig);
-    const visionConfig = config.visionConfig ?? readVisionConfig(process.env);
     const imageHostConfig = config.imageHostConfig ?? readImageHostConfig(process.env);
     this.imageHost = imageHostConfig
       ? new ImageHostClient(imageHostConfig)
       : undefined;
     this.pdfReader = new LocalPdfReader();
-    this.runtime.visionEnabled = Boolean(visionConfig?.shareId && visionConfig.authorization);
     this.persistRuntimeConfig();
-    const vision = visionConfig?.shareId && visionConfig.authorization
-      ? new JimoVisionProvider(visionConfig)
-      : undefined;
     const services: ToolServices = {
       planStore: {
         get: (sessionId) => {
@@ -292,7 +285,6 @@ export class Gateway {
           this.sessions.setMeta(sessionId, { plan });
         },
       },
-      vision: createVisionService(vision, this.attachments),
       documents: createDocumentService(this.pdfReader, this.attachments),
       subagents: {
         delegate: (request, context) => this.runSubagent(request, context),
@@ -302,7 +294,6 @@ export class Gateway {
     this.agent = new Agent(
       {
         ...config.agentConfig,
-        mode: config.agentConfig.mode ?? this.runtime.mode,
         promptMode: config.agentConfig.promptMode ?? this.runtime.promptMode,
         autoMemoryReview: config.agentConfig.autoMemoryReview ?? this.runtime.autoMemoryReview,
         toolsets: config.agentConfig.toolsets ?? this.runtime.toolsets,
@@ -318,7 +309,7 @@ export class Gateway {
         memoryStore: this.memoryStore,
         skillStore: this.skillStore,
         browser: this.browser,
-        vision,
+        computer: this.computer,
         services,
       },
     );
@@ -343,6 +334,7 @@ export class Gateway {
     for (const active of this.activeRuns.values()) active.controller.abort();
     for (const pending of this.pendingConfirm.values()) pending.reject(new Error("Gateway stopped"));
     this.pendingConfirm.clear();
+    await this.computer.close();
     return new Promise((resolve) => {
       this.wsServer.close();
       this.httpServer.close(() => resolve());
@@ -451,6 +443,9 @@ export class Gateway {
       if (path === "/api/browser/disconnect" && req.method === "POST") {
         await this.browser.disconnect();
         return this.sendJson(res, 200, this.browser.status());
+      }
+      if (path === "/api/computer/status" && req.method === "GET") {
+        return this.sendJson(res, 200, this.computer.status());
       }
 
       const runMatch = path.match(/^\/api\/runs\/([^/]+)(?:\/cancel)?$/);
@@ -1269,19 +1264,15 @@ export class Gateway {
 
   private publicConfig(): Record<string, unknown> {
     return {
-      mode: this.runtime.mode,
       promptMode: this.runtime.promptMode,
       autoMemoryReview: this.runtime.autoMemoryReview,
       workspace: this.runtime.workspace,
-      dataDir: this.runtime.dataDir,
       toolsets: this.runtime.toolsets,
       safetyMode: this.runtime.safetyMode,
       browserCdpUrl: this.runtime.browserCdpUrl,
+      computerEnabled: this.runtime.computerEnabled,
       browser: this.browser.status(),
-      visionConfigured: this.runtime.visionEnabled,
-      imageHostConfigured: Boolean(this.imageHost),
-      searchConfigured: Boolean(process.env.YOOMCLAW_SEARCH_URL),
-      mcpConfigured: Boolean(process.env.YOOMCLAW_MCP_URL),
+      computer: this.computer.status(),
       prompts: {
         global: this.promptStore.readGlobalPrompt(),
         user: this.promptStore.readUserProfile(),
@@ -1291,11 +1282,6 @@ export class Gateway {
   }
 
   private updateRuntimeConfig(patch: Record<string, unknown>): void {
-    if (patch.mode === "legacy" || patch.mode === "hermes") {
-      this.runtime.mode = patch.mode;
-      this.config.agentConfig.mode = patch.mode;
-      this.agent.config.mode = patch.mode;
-    }
     if (patch.promptMode === "provider" || patch.promptMode === "local") {
       this.runtime.promptMode = patch.promptMode;
       this.config.agentConfig.promptMode = patch.promptMode;
@@ -1308,7 +1294,7 @@ export class Gateway {
     }
     if (Array.isArray(patch.toolsets)) {
       this.runtime.toolsets = patch.toolsets.filter((value): value is RuntimeConfig["toolsets"][number] =>
-        ["coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration", "mcp", "computer"].includes(String(value)),
+        ["coding", "memory", "skills", "browser", "planning", "web", "execution", "orchestration", "mcp", "computer"].includes(String(value)),
       );
       this.config.agentConfig.toolsets = this.runtime.toolsets;
       this.agent.config.toolsets = this.runtime.toolsets;
@@ -1320,6 +1306,15 @@ export class Gateway {
     }
     if (typeof patch.browserCdpUrl === "string" && patch.browserCdpUrl.trim()) {
       this.runtime.browserCdpUrl = patch.browserCdpUrl.trim();
+    }
+    if (typeof patch.computerEnabled === "boolean") {
+      this.runtime.computerEnabled = patch.computerEnabled;
+      this.computer.setEnabled(patch.computerEnabled);
+      if (patch.computerEnabled && !this.runtime.toolsets.includes("computer")) {
+        this.runtime.toolsets = [...this.runtime.toolsets, "computer"];
+        this.config.agentConfig.toolsets = this.runtime.toolsets;
+        this.agent.config.toolsets = this.runtime.toolsets;
+      }
     }
     this.persistRuntimeConfig();
   }
@@ -1341,14 +1336,13 @@ export class Gateway {
       const file = pathModule.join(this.runtime.dataDir, "config.json");
       fs.mkdirSync(pathModule.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify({
-        mode: this.runtime.mode,
         promptMode: this.runtime.promptMode,
         autoMemoryReview: this.runtime.autoMemoryReview,
         workspace: this.runtime.workspace,
         toolsets: this.runtime.toolsets,
         safetyMode: this.runtime.safetyMode,
         browserCdpUrl: this.runtime.browserCdpUrl,
-        visionEnabled: this.runtime.visionEnabled,
+        computerEnabled: this.runtime.computerEnabled,
       }, null, 2), "utf8");
     } catch (err) {
       console.error("[Gateway] 配置保存失败:", err);
@@ -1397,17 +1391,6 @@ export class Gateway {
 /** 从 ChatMessage.content 里抽取纯文本（支持多模态数组）。 */
 function generateId(): string {
   return randomUUID();
-}
-
-function readVisionConfig(env: NodeJS.ProcessEnv): GatewayConfig["visionConfig"] {
-  const shareId = env.JIMO_VISION_SHARE_ID?.trim();
-  const authorization = env.JIMO_VISION_AUTHORIZATION?.trim();
-  if (!shareId || !authorization) return undefined;
-  return {
-    baseUrl: env.JIMO_VISION_API_BASE_URL ?? env.JIMO_API_BASE_URL ?? "https://jimoai-bot-api.xiaohuodui.cn",
-    shareId,
-    authorization,
-  };
 }
 
 function readImageHostConfig(env: NodeJS.ProcessEnv): ImageHostConfig | undefined {
@@ -1612,7 +1595,7 @@ export function startGateway(config?: Partial<GatewayConfig>): Gateway {
     workspace: config?.workspace ?? env.YOOMCLAW_WORKSPACE ?? env.CLAW_WORKSPACE ?? process.cwd(),
     agentConfig: config?.agentConfig ?? {
       provider: "jimo",
-      model: env.DEFAULT_MODEL ?? "jimo-default",
+      model: env.DEFAULT_MODEL ?? "gpt-5.6-luna",
     },
     jimoConfig: config?.jimoConfig ?? {
       baseUrl: env.JIMO_API_BASE_URL ?? "https://jimoai-bot-api.xiaohuodui.cn",
@@ -1622,7 +1605,6 @@ export function startGateway(config?: Partial<GatewayConfig>): Gateway {
     dataDir: config?.dataDir ?? env.YOOMCLAW_DATA_DIR,
     staticDir: config?.staticDir,
     runtime: config?.runtime,
-    visionConfig: config?.visionConfig ?? readVisionConfig(env),
     imageHostConfig: config?.imageHostConfig ?? readImageHostConfig(env),
   };
 

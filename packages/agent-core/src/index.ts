@@ -33,6 +33,7 @@ import {
   type BuiltinTool,
   type ToolContext,
   type BrowserToolController,
+  type ComputerUseController,
   type ToolOutcome,
 } from "./tools.js";
 import type { ToolServices } from "./services.js";
@@ -41,6 +42,8 @@ import {
   callFingerprint,
   buildToolPrompt,
   buildSafetyPrompt,
+  inferExplicitLocalFileCall,
+  looksLikeToolProtocolLeak,
   type ParsedToolCall,
 } from "./react.js";
 import { MAX_TOOL_RESULT_CHARS, truncateResult } from "./sandbox.js";
@@ -343,21 +346,13 @@ export interface RunOptions {
   runId?: string;
 }
 
-export interface VisionAnalyzer {
-  analyze(
-    message: ChatMessage,
-    sessionId: string,
-    options?: { signal?: AbortSignal },
-  ): Promise<string>;
-}
-
 export interface AgentRuntime {
   dataDir?: string;
   promptStore?: PromptStore;
   memoryStore?: MemoryStore;
   skillStore?: SkillStore;
   browser?: BrowserToolController;
-  vision?: VisionAnalyzer;
+  computer?: ComputerUseController;
   services?: ToolServices;
   promptAssembler?: PromptAssembler;
 }
@@ -374,6 +369,13 @@ export interface AgentEngine {
 
 const MAX_TOOL_ROUNDS = 12;
 const SPIN_THRESHOLD = 3;
+
+function redactToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (toolName !== "browser_type" && toolName !== "computer_use") return args;
+  const safe = { ...args };
+  if (typeof safe.text === "string") safe.text = "[redacted]";
+  return safe;
+}
 
 export class Agent implements AgentEngine {
   readonly config: AgentConfig;
@@ -476,35 +478,6 @@ export class Agent implements AgentEngine {
       ),
     };
 
-    if (this.runtime.vision && hasImagePart(providerMessage)) {
-      yield { type: "vision", status: "started" };
-      try {
-        const analysis = await this.runtime.vision.analyze(providerMessage, sessionId, {
-          signal: options?.signal,
-        });
-        if (analysis.trim()) {
-          const parts: ContentPart[] = Array.isArray(providerMessage.content) ? providerMessage.content : [
-            { type: "text", text: textFromMessage(providerMessage) },
-          ];
-          providerMessage = {
-            ...providerMessage,
-            content: [
-              ...parts,
-              { type: "text", text: `\n[图片识别结果，属于外部上下文]\n${analysis}` },
-            ],
-          };
-        }
-        yield { type: "vision", status: "completed" };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.warn(
-          "vision",
-          `图片识别失败：${message}`,
-        );
-        yield { type: "vision", status: "error", message };
-      }
-    }
-
     // 仅在会话里存用户提问 + 最终回答（中间轮的工具 JSON / 结果由事件流呈现，
     // 不进 session.messages —— 积墨服务端按 sessionId 维护上下文，客户端历史无效）。
     this.sessions.appendMessage(sessionId, userMessage);
@@ -518,16 +491,6 @@ export class Agent implements AgentEngine {
       )}"`,
     );
 
-    // The main share is text/file-only. Always remove raw image parts before
-    // its request, including when Vision is unavailable or failed; otherwise
-    // Jimo history can render an incomplete image card with `undefined`.
-    if (Array.isArray(providerMessage.content) && hasImagePart(providerMessage)) {
-      providerMessage = {
-        ...providerMessage,
-        content: providerMessage.content.filter((part) => part.type !== "image_url"),
-      };
-    }
-
     const activeTools = this.tools.filter((tool) => this.isToolEnabled(tool, options?.toolsets));
     const defs = activeTools.map((t) => t.definition);
     const knownToolNames = new Set(defs.map((d) => d.name));
@@ -535,7 +498,6 @@ export class Agent implements AgentEngine {
     const allowDynamicTool = (name: string) => name.startsWith("mcp.") && Boolean(this.runtime.services?.mcp);
     const promptStore = this.runtime.promptStore!;
     const needsBootstrap =
-      this.config.mode !== "legacy" &&
       this.config.promptMode === "local" &&
       session.meta?.hermesPromptInitialized !== true;
     const initialPrompt = needsBootstrap
@@ -558,7 +520,7 @@ export class Agent implements AgentEngine {
     // prompt can resolve {{safetyMode}} on every client run.
     if (!needsBootstrap) {
       providerMessage = withSafetyContext(providerMessage, safetyMode);
-      if (this.config.promptMode === "provider" && this.config.mode !== "legacy") {
+      if (this.config.promptMode === "provider") {
         const runtimeToolsPrompt = buildToolPrompt(defs);
         providerMessage = typeof providerMessage.content === "string"
           ? { ...providerMessage, content: `${runtimeToolsPrompt}\n${providerMessage.content}` }
@@ -568,9 +530,6 @@ export class Agent implements AgentEngine {
             };
       }
     }
-    const legacyPrompt = this.config.mode === "legacy"
-      ? `${buildToolPrompt(defs)}\n${textFromMessage(providerMessage)}`
-      : "";
     let finalText = "";
     let round = 0;
     let pendingCall: ParsedToolCall | null = null;
@@ -606,25 +565,19 @@ export class Agent implements AgentEngine {
                     ? initialPrompt
                     : [{ type: "text", text: initialPrompt }, ...providerMessage.content],
               }
-            : round === 1 && this.config.mode === "legacy"
-              ? {
-                  role: "user",
-                  content: Array.isArray(providerMessage.content)
-                    ? [{ type: "text", text: legacyPrompt }, ...providerMessage.content]
-                    : legacyPrompt,
-                }
-              : round === 1
-              ? providerMessage
-              : {
-                role: "user",
-                content: this.promptAssembler.buildToolResultPrompt({
-                    toolName: pendingCall!.tool,
-                    result: pendingResult,
-                    isError: pendingIsError,
-                  }),
-                };
+            : round === 1
+            ? providerMessage
+            : {
+              role: "user",
+              content: this.promptAssembler.buildToolResultPrompt({
+                  toolName: pendingCall!.tool,
+                  result: pendingResult,
+                  isError: pendingIsError,
+                }),
+              };
 
         let modelText = "";
+        const inferredCall = round === 1 ? inferExplicitLocalFileCall(userMessage) : null;
         try {
           for await (const chunk of this.provider.chat(
             {
@@ -639,7 +592,10 @@ export class Agent implements AgentEngine {
           )) {
             if (chunk.kind === "content") {
               modelText += chunk.content;
-              yield { type: "delta", text: chunk.content };
+              // An explicit attached-file delete is deterministic. Do not
+              // briefly expose an upstream model's malformed tool draft while
+              // the normal permission/confirmation path is being prepared.
+              if (!inferredCall) yield { type: "delta", text: chunk.content };
             } else {
               yield {
                 type: "progress",
@@ -682,13 +638,16 @@ export class Agent implements AgentEngine {
           break;
         }
 
-        const call = parseToolCall(modelText, knownToolNames, allowDynamicTool);
+        const call = parseToolCall(modelText, knownToolNames, allowDynamicTool) ?? inferredCall;
         if (!call) {
-          finalText = modelText;
+          finalText = looksLikeToolProtocolLeak(modelText)
+            ? "模型未按工具协议执行，未进行任何操作。请重试。"
+            : modelText;
           yield { type: "final", text: finalText };
           break;
         }
-        this.logger.info("tool", `${call.tool} args=${formatArgs(call.args)}`);
+        const safeArgs = redactToolArgs(call.tool, call.args);
+        this.logger.info("tool", `${call.tool} args=${formatArgs(safeArgs)}`);
 
         // 死循环检测：同一指纹连续出现过多则停止
         const fp = callFingerprint(call);
@@ -750,7 +709,7 @@ export class Agent implements AgentEngine {
             type: "tool_confirm",
             callId,
             name: call.tool,
-            args: call.args,
+            args: safeArgs,
             reason,
           };
           if (options?.confirm) {
@@ -758,7 +717,7 @@ export class Agent implements AgentEngine {
               approved = await options.confirm({
                 callId,
                 name: call.tool,
-                args: call.args,
+                args: safeArgs,
                 reason,
               });
             } catch (err) {
@@ -782,7 +741,7 @@ export class Agent implements AgentEngine {
             message: typeof call.args.task === "string" ? call.args.task.slice(0, 500) : undefined,
           };
         }
-        yield { type: "tool_start", callId, name: call.tool, args: call.args };
+        yield { type: "tool_start", callId, name: call.tool, args: safeArgs };
 
         const startedAt = Date.now();
         let outcome: ToolOutcome;
@@ -797,6 +756,7 @@ export class Agent implements AgentEngine {
             memory: this.runtime.memoryStore,
             skills: this.runtime.skillStore,
             browser: this.runtime.browser,
+            computer: this.runtime.computer,
             safetyMode,
             services: this.runtime.services,
             toolRegistry: activeTools,
@@ -863,7 +823,7 @@ export class Agent implements AgentEngine {
     if (this.config.enabledTools && !this.config.enabledTools.includes(name)) return false;
     const toolset = tool.definition.toolset ?? "coding";
     const enabledToolsets = runToolsets ?? this.config.toolsets ?? [
-      "coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration",
+      "coding", "memory", "skills", "browser", "planning", "web", "execution", "orchestration",
     ];
     return enabledToolsets.includes(toolset);
   }
@@ -908,7 +868,7 @@ export class Agent implements AgentEngine {
     input: string | ChatMessage,
     finalText: string,
   ): Promise<void> {
-    if (this.config.mode === "legacy" || !this.runtime.memoryStore) return;
+    if (!this.runtime.memoryStore) return;
 
     const userText = sanitizeReviewText(
       typeof input === "string" ? input : textFromMessage(input),
@@ -970,10 +930,6 @@ function generateId(): string {
     return crypto.randomUUID();
   }
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-}
-
-function hasImagePart(message: ChatMessage): boolean {
-  return Array.isArray(message.content) && message.content.some((part) => part.type === "image_url");
 }
 
 const MAX_LOCAL_PATHS_PER_MESSAGE = 32;
@@ -1170,12 +1126,11 @@ export {
 } from "./config.js";
 export { HermesPromptAssembler, type PromptContext, textFromMessage } from "./prompt.js";
 export { ChromeCdpController } from "./browser.js";
+export { WindowsComputerUseController, resolveComputerHelperPath, type ComputerControllerOptions } from "./computer.js";
 export type {
   ToolServices,
   ToolServiceContext,
   PlanStore,
-  VisionService,
-  VisionRequest,
   DocumentService,
   DocumentRequest,
   DocumentReadResult,

@@ -252,7 +252,6 @@ function eventLabel(event: AgentEvent): string {
     case "memory": return `记忆${event.action}`;
     case "skill_draft": return `Skill ${event.status}`;
     case "browser": return `浏览器${event.status}`;
-    case "vision": return `视觉${event.status}`;
     case "delta": return "生成中";
     default: return "运行事件";
   }

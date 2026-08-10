@@ -4,7 +4,7 @@
  * Read-only collector for JimoAI platform conversation history.
  *
  * Run with a separate credentials file, for example:
- *   node --env-file=.env.admin collect-jimo-history.mjs --output jimo-history.json
+ *   node --env-file=.env.admin web-automation/collect-jimo-history.mjs --output jimo-history.json
  *
  * Required environment variables:
  *   JIMO_ADMIN_TOKEN  - the platform login token, not the share/API token
@@ -25,7 +25,7 @@ const DEFAULT_CONCURRENCY = 5;
 
 function printHelp() {
   console.log(`Usage:
-  node --env-file=.env.admin collect-jimo-history.mjs [options]
+  node --env-file=.env.admin web-automation/collect-jimo-history.mjs [options]
 
 Options:
   --output <path>          Output JSON path (default: jimo-history-<timestamp>.json)

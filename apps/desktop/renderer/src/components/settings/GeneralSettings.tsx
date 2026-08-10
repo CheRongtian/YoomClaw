@@ -146,12 +146,11 @@ export default function GeneralSettings() {
 
       <style jsx>{`
         .grp-title {
-          font-size: 11px;
+          font-size: 11.5px;
           font-weight: 600;
-          letter-spacing: 0.6px;
-          text-transform: uppercase;
+          letter-spacing: 0.3px;
           color: var(--text-muted);
-          margin: 18px 0 2px;
+          margin: 22px 0 4px;
         }
         .grp-title:first-child {
           margin-top: 0;
@@ -166,11 +165,11 @@ export default function GeneralSettings() {
         }
         .zoom-value {
           min-width: 48px;
-          padding: 3px 8px;
+          padding: 4px 9px;
           border: 1px solid var(--border-active);
-          border-radius: 6px;
+          border-radius: 8px;
           color: var(--text);
-          background: var(--bg-element);
+          background: var(--bg-panel);
           font-size: 12px;
           font-variant-numeric: tabular-nums;
           text-align: center;

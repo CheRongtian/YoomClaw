@@ -24,3 +24,7 @@ test-streaming.mjs
 
 # Desktop packaging staging output
 apps/desktop/runtime/
+
+# .NET build intermediates
+**/bin/
+**/obj/

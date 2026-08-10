@@ -133,7 +133,7 @@ function toFileUploadResponse(
 /**
  * Uploads renderer-provided image/document data URLs to the existing
  * self-hosted host. The returned URL is public HTTPS and can be passed to
- * Jimo or the vision bot.
+ * the main Jimo agent.
  */
 export class ImageHostClient {
   constructor(private readonly config: ImageHostConfig) {}

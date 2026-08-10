@@ -61,8 +61,7 @@ JimoProvider (积墨 SSE)  ──  sandbox.ts 路径沙箱 + judgeCommand 命令
 
 1. **前端 emoji 图标**：`🦞`(品牌 mascot) / `☰` / `＋` / `🛠` / `⚠️` 作为图标使用，
    严格说不符合 P0-1（应换项目锁定 SVG 图标库）。属既有品牌设计，标记为后续美化项，未阻塞交付。
-2. **明文凭据**：`test-jimo.mjs` 第 2-3 行仍硬编码真实 shareId/Authorization，提交前必须处理
-   （改读 env 或加入 `.gitignore`）。
+2. **旧测试脚本**：早期的 `test-jimo.mjs` 已从工作区清理；所有真实 API 探测脚本均从环境变量读取凭据。
 3. **未接入的 app**：`apps/desktop`(Electron) 与 `apps/cli` 尚未接新 Agent 链路，本次只动了
    `webchat` + `gateway` + `agent-core`。
 4. **鉴权缺失**：Gateway 目前无鉴权 + `CORS: *`，本地单用户可接受；若暴露到网络需补 token。

@@ -3,9 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { PlanItem, PlanItemStatus, PlanState } from "@yoomclaw/protocol";
-import { MAX_IMAGES_PER_MESSAGE } from "@yoomclaw/protocol";
 import { resolveInWorkspace } from "./sandbox.js";
-import type { BuiltinTool, ToolContext, ToolOutcome } from "./tools.js";
+import type { BuiltinTool, ComputerElementTarget, ToolContext, ToolOutcome } from "./tools.js";
 import { moveToTrash } from "./trash.js";
 import type {
   CodeRunResult,
@@ -114,46 +113,6 @@ const updatePlan: BuiltinTool = {
     if ("isError" in plan) return plan;
     await store.set(ctx.sessionId, plan);
     return ok(JSON.stringify(plan), { plan });
-  },
-};
-
-const visionAnalyze: BuiltinTool = {
-  risk: "safe",
-  definition: {
-    name: "vision_analyze",
-    description: "调用视觉 Agent 分析一张或多张图片。支持本地路径或附件 fileId，最多 10 张。",
-    parameters: {
-      type: "object",
-      properties: {
-        paths: { type: "array", items: { type: "string" }, description: "本地图片路径数组。" },
-        fileIds: { type: "array", items: { type: "string" }, description: "已上传附件 fileId 数组。" },
-        prompt: { type: "string", description: "对图片提出的具体问题。" },
-      },
-    },
-    toolset: "vision",
-  },
-  async run(args, ctx) {
-    const service = ctx.services?.vision;
-    if (!service) return fail("当前未配置视觉 Agent", "VISION_UNAVAILABLE");
-    const paths = stringArrayArg(args, "paths");
-    const fileIds = stringArrayArg(args, "fileIds");
-    const legacyPath = stringArg(args, "path");
-    if (legacyPath) paths.push(legacyPath);
-    if (paths.length + fileIds.length === 0) return fail("至少提供一个图片路径或 fileId", "VISION_INPUT_REQUIRED");
-    if (paths.length + fileIds.length > MAX_IMAGES_PER_MESSAGE) {
-      return fail(`一次最多分析 ${MAX_IMAGES_PER_MESSAGE} 张图片`, "TOO_MANY_IMAGES");
-    }
-    try {
-      const result = await service.analyze({
-        paths,
-        fileIds,
-        prompt: typeof args.prompt === "string" ? args.prompt.slice(0, 4000) : undefined,
-      }, contextOf(ctx));
-      if (!result.text.trim()) return fail("视觉 Agent 没有返回可用结果", "VISION_EMPTY_RESULT");
-      return ok(result.text, result.metadata, 50_000);
-    } catch (error) {
-      return fail(`视觉分析失败：${error instanceof Error ? error.message : String(error)}`, "VISION_FAILED");
-    }
   },
 };
 
@@ -854,18 +813,52 @@ const mcpInvoke: BuiltinTool = {
   },
 };
 
-const computerUse: BuiltinTool = {
+function computerHwnd(args: Record<string, unknown>): number | null {
+  return typeof args.hwnd === "number" && Number.isSafeInteger(args.hwnd) && args.hwnd > 0
+    ? args.hwnd
+    : null;
+}
+
+function computerElement(args: Record<string, unknown>): ComputerElementTarget | undefined {
+  const raw = args.element;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const value = raw as Record<string, unknown>;
+  const target: ComputerElementTarget = {
+    ...(typeof value.name === "string" && value.name.trim() ? { name: value.name.trim() } : {}),
+    ...(typeof value.automationId === "string" && value.automationId.trim() ? { automationId: value.automationId.trim() } : {}),
+    ...(typeof value.controlType === "string" && value.controlType.trim() ? { controlType: value.controlType.trim() } : {}),
+    ...(Number.isInteger(value.index) ? { index: Number(value.index) } : {}),
+  };
+  return target.name || target.automationId || target.controlType ? target : undefined;
+}
+
+function computerErrorCode(error: unknown): string {
+  return error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : "COMPUTER_ACTION_FAILED";
+}
+
+const nativeComputerUse: BuiltinTool = {
   risk: "confirm",
   definition: {
     name: "computer_use",
-    description: "执行浏览器级 computer-use 操作；原生桌面操作尚未默认启用。",
+    description: "Control a Windows desktop window through UI Automation; browser pages use the browser tools instead.",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["snapshot", "navigate", "click", "type", "scroll", "back", "screenshot"] },
-        url: { type: "string" },
-        selector: { type: "string" },
+        action: { type: "string", enum: ["list_windows", "inspect", "screenshot", "focus", "click", "type", "press_key", "scroll", "read"] },
+        hwnd: { type: "number", description: "Target Windows window handle (HWND)." },
+        element: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            automationId: { type: "string" },
+            controlType: { type: "string" },
+            index: { type: "number" },
+          },
+        },
         text: { type: "string" },
+        key: { type: "string" },
         direction: { type: "string", enum: ["up", "down"] },
       },
       required: ["action"],
@@ -873,51 +866,68 @@ const computerUse: BuiltinTool = {
     toolset: "computer",
   },
   assess(args) {
-    return ["click", "type", "navigate"].includes(String(args.action))
-      ? `将执行浏览器 ${String(args.action)} 操作`
-      : "将读取当前浏览器状态";
+    const action = String(args.action ?? "");
+    return ["click", "type", "press_key"].includes(action)
+      ? `Windows desktop ${action} requires confirmation for the selected window.`
+      : null;
   },
   async run(args, ctx) {
-    const browser = ctx.browser;
-    if (!browser) return fail("浏览器未连接", "BROWSER_UNAVAILABLE");
+    const computer = ctx.computer;
+    if (!computer) return fail("Windows computer control is unavailable", "COMPUTER_UNAVAILABLE");
     const action = stringArg(args, "action");
+    const hwnd = computerHwnd(args);
     try {
       switch (action) {
-        case "snapshot": return ok(JSON.stringify(await browser.snapshot()));
-        case "navigate": {
-          const url = stringArg(args, "url");
-          if (!url) return fail("navigate 需要 url", "BROWSER_URL_REQUIRED");
-          return ok(JSON.stringify(await browser.navigate(url)));
+        case "list_windows": return ok(JSON.stringify(await computer.listWindows()));
+        case "inspect": {
+          if (!hwnd) return fail("inspect requires hwnd", "WINDOW_REQUIRED");
+          return ok(JSON.stringify(await computer.inspect(hwnd)));
+        }
+        case "screenshot": {
+          if (!hwnd) return fail("screenshot requires hwnd", "WINDOW_REQUIRED");
+          return ok(JSON.stringify(await computer.screenshot(hwnd)));
+        }
+        case "focus": {
+          if (!hwnd) return fail("focus requires hwnd", "WINDOW_REQUIRED");
+          return ok(JSON.stringify(await computer.focus(hwnd)));
         }
         case "click": {
-          const selector = stringArg(args, "selector");
-          if (!selector) return fail("click 需要 selector", "BROWSER_SELECTOR_REQUIRED");
-          return ok(JSON.stringify(await browser.click(selector)));
+          const target = computerElement(args);
+          if (!hwnd || !target) return fail("click requires hwnd and element", "COMPUTER_TARGET_REQUIRED");
+          return ok(JSON.stringify(await computer.click(hwnd, target)));
         }
         case "type": {
-          const selector = stringArg(args, "selector");
+          const target = computerElement(args);
           const text = typeof args.text === "string" ? args.text : null;
-          if (!selector || text === null) return fail("type 需要 selector 和 text", "BROWSER_TYPE_REQUIRED");
-          return ok(JSON.stringify(await browser.type(selector, text)));
+          if (!hwnd || !target || text === null) return fail("type requires hwnd, element, and text", "COMPUTER_TYPE_REQUIRED");
+          return ok(JSON.stringify(await computer.type(hwnd, target, text)));
+        }
+        case "press_key": {
+          const key = stringArg(args, "key");
+          if (!hwnd || !key) return fail("press_key requires hwnd and key", "COMPUTER_KEY_REQUIRED");
+          return ok(JSON.stringify(await computer.pressKey(hwnd, key)));
         }
         case "scroll": {
-          const direction = args.direction === "up" ? "up" : args.direction === "down" ? "down" : null;
-          if (!direction) return fail("scroll 需要 direction", "BROWSER_DIRECTION_REQUIRED");
-          return ok(JSON.stringify(await browser.scroll(direction)));
+          const direction = args.direction === "up" || args.direction === "down" ? args.direction : null;
+          const target = computerElement(args);
+          if (!hwnd || !direction) return fail("scroll requires hwnd and direction", "COMPUTER_SCROLL_REQUIRED");
+          return ok(JSON.stringify(await computer.scroll(hwnd, direction, target)));
         }
-        case "back": return ok(JSON.stringify(await browser.back()));
-        case "screenshot": return ok(JSON.stringify(await browser.screenshot()));
-        default: return fail("不支持的 computer_use action", "BROWSER_ACTION_INVALID");
+        case "read": {
+          const target = computerElement(args);
+          if (!hwnd || !target) return fail("read requires hwnd and element", "COMPUTER_READ_REQUIRED");
+          return ok(JSON.stringify(await computer.read(hwnd, target)));
+        }
+        default: return fail("Unsupported computer_use action", "COMPUTER_ACTION_INVALID");
       }
     } catch (error) {
-      return fail(`浏览器操作失败：${error instanceof Error ? error.message : String(error)}`, "BROWSER_ACTION_FAILED");
+      return fail(`Windows computer action failed: ${error instanceof Error ? error.message : String(error)}`, computerErrorCode(error));
     }
   },
 };
 
 export const ADVANCED_TOOLS: BuiltinTool[] = [
   updatePlan,
-  visionAnalyze,
   applyPatch,
   webFetch,
   webExtract,
@@ -928,5 +938,5 @@ export const ADVANCED_TOOLS: BuiltinTool[] = [
   delegateTask,
   toolSearch,
   mcpInvoke,
-  computerUse,
+  nativeComputerUse,
 ];

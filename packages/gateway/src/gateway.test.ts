@@ -14,7 +14,7 @@ test("Gateway exposes Hermes config without provider credentials", async () => {
     port: 0,
     workspace: root,
     dataDir: path.join(root, "data"),
-    agentConfig: { provider: "jimo", model: "test", mode: "hermes" },
+    agentConfig: { provider: "jimo", model: "test" },
     jimoConfig: {
       baseUrl: "https://example.test",
       shareId: "secret-share",
@@ -32,10 +32,21 @@ test("Gateway exposes Hermes config without provider credentials", async () => {
     const configResponse = await fetch(`${base}/api/config`);
     assert.equal(configResponse.ok, true);
     const config = await configResponse.json() as Record<string, unknown>;
-    assert.equal(config.mode, "hermes");
+    assert.equal("mode" in config, false);
     assert.equal(config.workspace, root);
     assert.equal("authorization" in config, false);
     assert.equal("shareId" in config, false);
+    assert.equal("agent" in config, false);
+    assert.equal("dataDir" in config, false);
+    assert.equal("imageHostConfigured" in config, false);
+    assert.equal("searchConfigured" in config, false);
+    assert.equal("mcpConfigured" in config, false);
+    assert.equal("visionConfigured" in config, false);
+    assert.equal((config.toolsets as string[]).includes("vision"), false);
+    assert.equal(typeof (config.computer as { enabled?: unknown } | undefined)?.enabled, "boolean");
+    const computerStatusResponse = await fetch(`${base}/api/computer/status`);
+    assert.equal(computerStatusResponse.ok, true);
+    assert.equal(typeof (await computerStatusResponse.json() as { available?: unknown }).available, "boolean");
 
     const modeResponse = await fetch(`${base}/api/config`, {
       method: "PATCH",
@@ -43,7 +54,17 @@ test("Gateway exposes Hermes config without provider credentials", async () => {
       body: JSON.stringify({ mode: "legacy" }),
     });
     assert.equal(modeResponse.ok, true);
-    assert.equal((await modeResponse.json() as { mode: string }).mode, "legacy");
+    assert.equal("mode" in (await modeResponse.json() as Record<string, unknown>), false);
+
+    const computerResponse = await fetch(`${base}/api/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ computerEnabled: true }),
+    });
+    assert.equal(computerResponse.ok, true);
+    const computerConfig = await computerResponse.json() as { computerEnabled?: boolean; toolsets?: string[] };
+    assert.equal(computerConfig.computerEnabled, true);
+    assert.equal(computerConfig.toolsets?.includes("computer"), true);
 
     const createResponse = await fetch(`${base}/api/sessions`, {
       method: "POST",
@@ -151,7 +172,7 @@ test("Gateway accepts ten attachment parts but rejects the eleventh before Agent
     port: 0,
     workspace: root,
     dataDir: path.join(root, "data"),
-    agentConfig: { provider: "jimo", model: "test", mode: "hermes" },
+    agentConfig: { provider: "jimo", model: "test" },
     jimoConfig: {
       baseUrl: "https://example.test",
       shareId: "secret-share",
@@ -244,7 +265,7 @@ test("Gateway aborts active runs before deleting a session", async () => {
     port: 0,
     workspace: root,
     dataDir: path.join(root, "data"),
-    agentConfig: { provider: "jimo", model: "test", mode: "hermes" },
+    agentConfig: { provider: "jimo", model: "test" },
     jimoConfig: {
       baseUrl: "https://example.test",
       shareId: "secret-share",

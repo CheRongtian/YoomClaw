@@ -11,7 +11,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { exec } from "node:child_process";
 import { TextDecoder, promisify } from "node:util";
-import type { SafetyMode, ToolDefinition, ToolRisk, ToolsetId } from "@yoomclaw/protocol";
+import type {
+  BrowserActionOptions,
+  BrowserLocator,
+  BrowserScreenshot,
+  BrowserSnapshot,
+  BrowserStatus,
+  BrowserTab,
+  ComputerStatus,
+  SafetyMode,
+  ToolDefinition,
+  ToolRisk,
+  ToolsetId,
+} from "@yoomclaw/protocol";
 import {
   resolveInWorkspace,
   judgeCommand,
@@ -100,6 +112,7 @@ export interface ToolContext {
   memory?: MemoryStore;
   skills?: SkillStore;
   browser?: BrowserToolController;
+  computer?: ComputerUseController;
   /** Permission policy for this run; omitted by legacy/direct tool callers. */
   safetyMode?: SafetyMode;
   /** Optional adapters for provider-backed and orchestrated tools. */
@@ -109,14 +122,59 @@ export interface ToolContext {
 }
 
 export interface BrowserToolController {
-  snapshot(): Promise<{ url: string; title: string; text: string }>;
-  navigate(url: string): Promise<{ url: string; title: string; text: string }>;
-  click(selector: string): Promise<{ url: string; title: string; text: string }>;
-  type(selector: string, text: string): Promise<{ url: string; title: string; text: string }>;
-  scroll(direction: "up" | "down"): Promise<{ url: string; title: string; text: string }>;
-  back(): Promise<{ url: string; title: string; text: string }>;
-  screenshot(): Promise<{ url: string; title: string; path?: string }>;
-  status(): { connected: boolean; cdpUrl: string; pageUrl?: string; title?: string; message?: string };
+  snapshot(options?: BrowserActionOptions): Promise<BrowserSnapshot>;
+  listTabs(): Promise<BrowserTab[]>;
+  selectTab(tabId: string): Promise<BrowserTab>;
+  navigate(url: string, options?: BrowserActionOptions): Promise<BrowserSnapshot>;
+  click(target: BrowserLocator, options?: BrowserActionOptions): Promise<BrowserSnapshot>;
+  type(target: BrowserLocator, text: string, options?: BrowserActionOptions): Promise<BrowserSnapshot>;
+  scroll(direction: "up" | "down", options?: BrowserActionOptions): Promise<BrowserSnapshot>;
+  back(options?: BrowserActionOptions): Promise<BrowserSnapshot>;
+  screenshot(options?: BrowserActionOptions): Promise<BrowserScreenshot>;
+  status(): BrowserStatus;
+}
+
+export interface ComputerWindow {
+  hwnd: number;
+  title: string;
+  processId?: number;
+  processName?: string;
+  focused?: boolean;
+  visible?: boolean;
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+
+export interface ComputerElement {
+  name?: string;
+  automationId?: string;
+  controlType?: string;
+  hwnd?: number;
+  enabled?: boolean;
+  value?: string;
+  bounds?: { x: number; y: number; width: number; height: number };
+  children?: ComputerElement[];
+}
+
+export interface ComputerElementTarget {
+  name?: string;
+  automationId?: string;
+  controlType?: string;
+  index?: number;
+}
+
+export interface ComputerUseController {
+  status(): ComputerStatus;
+  setEnabled(enabled: boolean): void;
+  listWindows(): Promise<ComputerWindow[]>;
+  inspect(hwnd: number): Promise<ComputerElement>;
+  screenshot(hwnd: number): Promise<{ hwnd: number; path: string }>;
+  focus(hwnd: number): Promise<ComputerWindow>;
+  click(hwnd: number, target: ComputerElementTarget): Promise<ComputerElement>;
+  type(hwnd: number, target: ComputerElementTarget, text: string): Promise<ComputerElement>;
+  pressKey(hwnd: number, key: string): Promise<{ hwnd: number; key: string }>;
+  scroll(hwnd: number, direction: "up" | "down", target?: ComputerElementTarget): Promise<ComputerElement | ComputerWindow>;
+  read(hwnd: number, target: ComputerElementTarget): Promise<{ value: string; element: ComputerElement }>;
+  close(): Promise<void>;
 }
 
 export interface ToolOutcome {
@@ -677,7 +735,6 @@ function inferToolset(name: string): ToolsetId {
   if (name.startsWith("skill_")) return "skills";
   if (name.startsWith("browser_")) return "browser";
   if (name === "update_plan" || name === "todo") return "planning";
-  if (name === "vision_analyze") return "vision";
   if (name === "web_fetch" || name === "web_extract" || name === "web_search") return "web";
   if (name === "execute_code") return "execution";
   if (name === "parallel" || name === "delegate_task") return "orchestration";

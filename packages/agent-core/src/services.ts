@@ -14,19 +14,6 @@ export interface PlanStore {
   set(sessionId: string, plan: PlanState): void | Promise<void>;
 }
 
-export interface VisionRequest {
-  paths?: string[];
-  fileIds?: string[];
-  prompt?: string;
-}
-
-export interface VisionService {
-  analyze(
-    request: VisionRequest,
-    context: ToolServiceContext,
-  ): Promise<{ text: string; metadata?: Record<string, unknown> }>;
-}
-
 export interface DocumentRequest {
   path?: string;
   fileId?: string;
@@ -145,7 +132,6 @@ export interface TrashService {
 export interface ToolServices {
   trash?: TrashService;
   planStore?: PlanStore;
-  vision?: VisionService;
   documents?: DocumentService;
   web?: WebService;
   codeRunner?: CodeRunner;

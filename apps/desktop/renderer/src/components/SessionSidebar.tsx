@@ -186,6 +186,11 @@ export default function SessionSidebar({
   const pendingDeleteSession = pendingDeleteId
     ? sessions.find((session) => session.id === pendingDeleteId) ?? null
     : null;
+  const updateButtonVisible = updateState.status === "available"
+    || updateState.status === "downloading"
+    || updateState.status === "downloaded"
+    || updateState.status === "manual-install-required"
+    || (updateState.status === "error" && Boolean(updateState.targetVersion));
 
   const confirmDelete = () => {
     if (!pendingDeleteId) return;
@@ -363,21 +368,23 @@ export default function SessionSidebar({
               <SettingsIcon size={20} />
               <span>设置</span>
             </button>
-            <button
-              className={`update-btn ${updateState.status === "downloading" || updateState.status === "checking" ? "is-loading" : ""} ${updateState.status === "available" || updateState.status === "downloaded" || updateState.status === "manual-install-required" ? "has-update" : ""}`}
-              data-testid="update-open"
-              onClick={() => void onUpdate()}
-              disabled={updateDisabled}
-              aria-label={updateLabel}
-              title={updateState.enabled ? `${updateLabel}${updateState.message ? `：${updateState.message}` : ""}` : updateState.message}
-              aria-busy={updateState.status === "downloading" || updateState.status === "checking"}
-            >
-              {updateState.status === "checking" || updateState.status === "downloading" ? <LoaderIcon size={18} /> : null}
-              {updateState.status === "downloaded" ? <CheckIcon size={18} /> : null}
-              {updateState.status === "error" ? <WarningIcon size={18} /> : null}
-              {updateState.status !== "checking" && updateState.status !== "downloading" && updateState.status !== "downloaded" && updateState.status !== "error" ? <ExportIcon size={18} /> : null}
-              {(updateState.status === "available" || updateState.status === "manual-install-required") && <span className="update-badge" />}
-            </button>
+            {updateButtonVisible && (
+              <button
+                className={`update-btn ${updateState.status === "downloading" || updateState.status === "checking" ? "is-loading" : ""} ${updateState.status === "available" || updateState.status === "downloaded" || updateState.status === "manual-install-required" ? "has-update" : ""}`}
+                data-testid="update-open"
+                onClick={() => void onUpdate()}
+                disabled={updateDisabled}
+                aria-label={updateLabel}
+                title={updateState.enabled ? `${updateLabel}${updateState.message ? `：${updateState.message}` : ""}` : updateState.message}
+                aria-busy={updateState.status === "downloading" || updateState.status === "checking"}
+              >
+                {updateState.status === "checking" || updateState.status === "downloading" ? <LoaderIcon size={18} /> : null}
+                {updateState.status === "downloaded" ? <CheckIcon size={18} /> : null}
+                {updateState.status === "error" ? <WarningIcon size={18} /> : null}
+                {updateState.status !== "checking" && updateState.status !== "downloading" && updateState.status !== "downloaded" && updateState.status !== "error" ? <ExportIcon size={18} /> : null}
+                {(updateState.status === "available" || updateState.status === "manual-install-required") && <span className="update-badge" />}
+              </button>
+            )}
           </div>
         </div>
       </aside>
