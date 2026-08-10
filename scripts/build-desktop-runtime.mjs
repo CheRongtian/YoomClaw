@@ -5,6 +5,16 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = path.join(root, "apps", "desktop", "runtime");
+const helperName = process.platform === "darwin" ? "computer-control-mac" : "computer-control-win";
+const helperDir = path.join(runtimeDir, helperName);
+const helperStaging = path.join(root, ".tmp", `${helperName}-staging`);
+
+await fs.rm(helperStaging, { recursive: true, force: true });
+try {
+  await fs.cp(helperDir, helperStaging, { recursive: true });
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
 
 await fs.rm(runtimeDir, { recursive: true, force: true });
 await fs.mkdir(runtimeDir, { recursive: true });
@@ -21,5 +31,13 @@ await build({
   legalComments: "none",
   logLevel: "info",
 });
+
+try {
+  await fs.cp(helperStaging, helperDir, { recursive: true, force: true });
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+} finally {
+  await fs.rm(helperStaging, { recursive: true, force: true });
+}
 
 console.log(`[YoomClaw] desktop Gateway runtime written to ${path.relative(root, runtimeDir)}`);

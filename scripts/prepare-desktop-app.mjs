@@ -16,16 +16,18 @@ await execFileAsync("pnpm", [
   "--filter",
   "@yoomclaw/desktop",
   "deploy",
-  "--prod",
-  "--legacy",
-  "--frozen-lockfile",
-  "--config.node-linker=hoisted",
   staging,
+  "--prod",
+  "--frozen-lockfile",
+  "--config.inject-workspace-packages=true",
 ], {
   cwd: root,
   windowsHide: true,
   shell: process.platform === "win32",
 });
+
+await fs.access(path.join(staging, "node_modules", "ws"));
+await fs.access(path.join(staging, "node_modules", "electron-updater"));
 
 for (const name of ["src", "assets", "renderer/dist", "runtime"]) {
   const from = path.join(source, name);

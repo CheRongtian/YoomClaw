@@ -15,18 +15,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
-const require = createRequire(new URL("./packages/agent-core/package.json", import.meta.url));
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(path.join(REPO_ROOT, "packages", "agent-core", "package.json"));
 const { chromium } = require("playwright-core");
 
 const DEFAULT_URL = "https://jimoai.xiaohuodui.cn/robot";
 const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
-const DEFAULT_OUTPUT = path.resolve(".claw-data/jimo-history-rpa.json");
+const DEFAULT_OUTPUT = path.join(REPO_ROOT, ".claw-data", "jimo-history-rpa.json");
 
 function usage() {
   console.log(`
 Usage:
-  node collect-jimo-history-rpa.mjs [options]
+  node web-automation/collect-jimo-history-rpa.mjs [options]
 
 Options:
   --cdp <url>          Chrome CDP URL (default: ${DEFAULT_CDP_URL})
@@ -39,7 +41,7 @@ Options:
   --help               Show this help
 
 Example:
-  node collect-jimo-history-rpa.mjs --robot-keyword agent --max-records 20
+  node web-automation/collect-jimo-history-rpa.mjs --robot-keyword agent --max-records 20
 `);
 }
 

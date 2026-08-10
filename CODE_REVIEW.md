@@ -210,8 +210,8 @@ README 里"Agent — orchestrates LLM calls + history + tools"和架构图里的
 |---|---|---|
 | 死代码 | `apps/webchat/src/components/MessageList.tsx` | 201 行，全项目无任何引用，实际用的是 `MessageStream.tsx` |
 | 重复文件 | `apps/desktop/src/main.ts`、`preload.cjs.ts` | 与 `.cjs` 版本内容基本一致，Electron 实际加载的是 `.cjs`，TS 版是废弃残留 |
-| 调试残留 | `packages/gateway/src/debug.mjs`、根目录 `test-jimo.mjs` / `test-streaming.mjs` | 临时脚本，建议移入 `scripts/` 或删除 |
-| 运行日志入库 | `gateway.log` / `gateway.err` | 应加入 `.gitignore` |
+| 调试残留 | 早期 `packages/gateway/src/debug.mjs`、根目录 `test-jimo.mjs` / `test-streaming.mjs` | 已从工作区清理 |
+| 运行日志入库 | `gateway.log` / `gateway.err` | 已加入 `.gitignore` 并清理现有残留 |
 | 跨平台脚本 | 根 `package.json` 的 `clean: rm -rf ...` | Windows PowerShell 下不可用，建议换 `rimraf` |
 | 依赖重复 | 根 `devDependencies.electron` 与 `apps/desktop` 各声明一份 | 建议只留 app 级 |
 | 潜在坑 | `next.config.mjs` 无 `transpilePackages` | 现在 webchat 只 `import type` 所以能编译；一旦从 `@yoomclaw/protocol` 引入任何运行时值（枚举、常量、函数），Next 会因为直接吃 TS 源码而构建失败 |

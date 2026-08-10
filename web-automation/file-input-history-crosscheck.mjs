@@ -13,8 +13,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DEFAULT_RPA_SCRIPT = process.env.YOOMCLAW_RPA_SCRIPT?.trim() || "collect-jimo-history-rpa.mjs";
+const AUTOMATION_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(AUTOMATION_DIR, "..");
+const configuredRpa = process.env.YOOMCLAW_RPA_SCRIPT?.trim();
+const DEFAULT_RPA_SCRIPT = configuredRpa ? path.resolve(configuredRpa) : path.join(AUTOMATION_DIR, "collect-jimo-history-rpa.mjs");
 const DEFAULT_CDP = "http://127.0.0.1:9222";
 const DEFAULT_MAX_RECORDS = 20;
 const DEFAULT_TEST_MARKER = "File-input regression test";

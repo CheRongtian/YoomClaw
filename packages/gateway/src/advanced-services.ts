@@ -10,13 +10,9 @@ import type {
   McpService,
   McpToolSummary,
   ToolServiceContext,
-  VisionRequest,
-  VisionService,
 } from "@yoomclaw/agent-core";
 import { resolveInWorkspace } from "@yoomclaw/agent-core";
-import type { ChatMessage, ContentPart } from "@yoomclaw/protocol";
 import { LocalPdfReader } from "./pdf-reader.js";
-import type { VisionProvider } from "@yoomclaw/llm-provider";
 
 const MAX_DOCUMENT_BYTES = 10_000_000;
 const DEFAULT_MAX_CHARS = 50_000;
@@ -87,58 +83,12 @@ function dataUrlToBytes(value: string): { bytes: Buffer; mimeType: string } | nu
   return { bytes, mimeType: match[1] || "application/octet-stream" };
 }
 
-function imageDataUrl(bytes: Buffer, mimeType: string): string {
-  return `data:${mimeType};base64,${bytes.toString("base64")}`;
-}
-
 function resolveRequestedPath(requested: string, context: ToolServiceContext): string {
   const resolved = resolveInWorkspace(context.workspace, requested, {
     allowOutsideWorkspace: context.safetyMode === "full-access",
   });
   if (!resolved.ok) throw new Error(resolved.reason);
   return resolved.resolved;
-}
-
-export function createVisionService(
-  provider: VisionProvider | undefined,
-  attachments: AttachmentStore,
-): VisionService | undefined {
-  if (!provider) return undefined;
-  return {
-    async analyze(request: VisionRequest, context: ToolServiceContext) {
-      const parts: ContentPart[] = [];
-      const imagePaths = request.paths ?? [];
-      const imageIds = request.fileIds ?? [];
-      const sources: Array<{ bytes: Buffer; mimeType: string; name: string }> = [];
-      for (const requested of imagePaths) {
-        const resolved = resolveRequestedPath(requested, context);
-        const stat = await fs.stat(resolved);
-        if (!stat.isFile()) throw new Error(`${requested} 不是文件`);
-        if (stat.size > MAX_DOCUMENT_BYTES) throw new Error(`${requested} 超过 10MB 限制`);
-        const extension = path.extname(resolved).toLowerCase();
-        if (!mimeForExtension(extension).startsWith("image/")) throw new Error(`${requested} 不是支持的图片格式`);
-        sources.push({ bytes: await fs.readFile(resolved), mimeType: mimeForExtension(extension), name: path.basename(resolved) });
-      }
-      for (const fileId of imageIds) {
-        const record = attachments.get(fileId);
-        if (!record) throw new Error(`找不到附件 ${fileId}`);
-        const data = dataUrlToBytes(record.url);
-        if (!data) throw new Error(`附件 ${fileId} 没有本地内容`);
-        if (data.bytes.length > MAX_DOCUMENT_BYTES) throw new Error(`附件 ${fileId} 超过 10MB 限制`);
-        sources.push({ bytes: data.bytes, mimeType: record.mimeType ?? data.mimeType, name: record.fileName ?? fileId });
-      }
-      for (const source of sources) {
-        parts.push({ type: "image_url", image_url: { url: imageDataUrl(source.bytes, source.mimeType) } });
-      }
-      parts.unshift({
-        type: "text",
-        text: request.prompt?.trim() || "请分析这些图片，提取可见文字并说明关键内容。",
-      });
-      const message: ChatMessage = { role: "user", content: parts };
-      const text = await provider.analyze(message, context.sessionId, { signal: context.signal });
-      return { text, metadata: { imageCount: sources.length, names: sources.map((source) => source.name) } };
-    },
-  };
 }
 
 function textDecode(bytes: Buffer): string {

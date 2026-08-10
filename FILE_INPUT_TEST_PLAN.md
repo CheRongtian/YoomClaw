@@ -71,7 +71,7 @@ pnpm test:file-inputs:history -- `
 - RPA gate: pending until a logged-in Chrome exposes CDP at `127.0.0.1:9222`.
 
 `test:file-inputs:history` 只调用用户提供的
-用户提供的 `collect-jimo-history-rpa.mjs`，不会读取 Cookie、Token 或调用 Jimo 后台 API。
+`web-automation/collect-jimo-history-rpa.mjs` 不会读取 Cookie、Token 或调用 Jimo 后台 API。
 
 ## 量化完成门槛
 

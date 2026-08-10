@@ -18,7 +18,7 @@ import { _electron } from "../packages/agent-core/node_modules/playwright-core/i
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
-const GATEWAY_URL = "http://127.0.0.1:18789";
+const DEFAULT_GATEWAY_PORT = 18789;
 const DEFAULT_TIMEOUT = 20_000;
 const LIVE_TIMEOUT = 180_000;
 
@@ -37,13 +37,14 @@ function parseArgs(argv) {
     fullLive: false,
     reportDir: path.join(REPO_ROOT, ".tmp", "yoomclaw-e2e"),
     chromeCdp: "http://127.0.0.1:9222",
+    gatewayPort: DEFAULT_GATEWAY_PORT,
     requireChrome: false,
     keepArtifacts: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") {
-      console.log("Usage: pnpm test:e2e:ui -- --live [--full-live] [--report-dir <dir>] [--require-chrome]");
+      console.log("Usage: pnpm test:e2e:ui -- --live [--full-live] [--gateway-port <port>] [--report-dir <dir>] [--require-chrome]");
       process.exit(0);
     }
     if (arg === "--live") args.live = true;
@@ -56,11 +57,15 @@ function parseArgs(argv) {
       if (!value) throw new Error(`Missing value for ${name}`);
       if (name === "--report-dir") args.reportDir = path.resolve(value);
       else if (name === "--chrome-cdp") args.chromeCdp = value;
+      else if (name === "--gateway-port") args.gatewayPort = Number(value);
       else throw new Error(`Unknown option: ${arg}`);
     }
   }
   if (!args.live) {
     throw new Error("真实端到端 UI 测试必须显式传入 --live；它会调用 Jimo 并产生后台记录。");
+  }
+  if (!Number.isInteger(args.gatewayPort) || args.gatewayPort < 1 || args.gatewayPort > 65_535) {
+    throw new Error(`Gateway 端口无效：${args.gatewayPort}`);
   }
   return args;
 }
@@ -100,11 +105,11 @@ async function waitForHttp(url, timeoutMs = DEFAULT_TIMEOUT) {
   }, timeoutMs);
 }
 
-async function assertGatewayFree() {
+async function assertGatewayFree(gatewayUrl, gatewayPort) {
   try {
-    const response = await fetch(`${GATEWAY_URL}/api/health`);
+    const response = await fetch(`${gatewayUrl}/api/health`);
     if (response.ok) {
-      throw new Error("18789 端口已有 Gateway；请先关闭正在运行的 YoomClaw，再运行 E2E。");
+      throw new Error(`${gatewayPort} 端口已有 Gateway；请改用隔离端口或先关闭正在运行的 YoomClaw，再运行 E2E。`);
     }
   } catch (error) {
     if (error instanceof Error && error.message.includes("已有 Gateway")) throw error;
@@ -199,6 +204,7 @@ async function ariaSnapshot(page) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const gatewayUrl = `http://127.0.0.1:${args.gatewayPort}`;
   const startedAt = new Date();
   const runId = `YC-E2E-${startedAt.toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}-${Math.random().toString(36).slice(2, 8)}`;
   await fs.mkdir(args.reportDir, { recursive: true });
@@ -210,7 +216,7 @@ async function main() {
     testMarker: `[${runId}]`,
     startedAt: startedAt.toISOString(),
     rendererPort: null,
-    gatewayUrl: GATEWAY_URL,
+    gatewayUrl,
     logsDir: path.join(runDir, "logs"),
     chromeCdp: args.chromeCdp,
     chromeReady: false,
@@ -232,7 +238,7 @@ async function main() {
   let renderer;
 
   try {
-    await assertGatewayFree();
+    await assertGatewayFree(gatewayUrl, args.gatewayPort);
     await fs.access(electronPath);
     userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "yoomclaw-e2e-user-data-"));
     report.rendererPort = await findFreePort();
@@ -288,9 +294,8 @@ async function main() {
         ...process.env,
         CLAW_RENDERER_URL: `http://127.0.0.1:${report.rendererPort}`,
         GATEWAY_HOST: "127.0.0.1",
-        GATEWAY_PORT: "18789",
+        GATEWAY_PORT: String(args.gatewayPort),
         YOOMCLAW_WORKSPACE: fixtures.workspace,
-        YOOMCLAW_AGENT_MODE: "hermes",
         YOOMCLAW_PROMPT_MODE: "provider",
         YOOMCLAW_AUTO_MEMORY_REVIEW: "false",
         YOOMCLAW_E2E_EXPORT_DIR: fixtures.exportDir,
@@ -345,19 +350,17 @@ async function main() {
     };
 
     await recordCase("BOOT-01", "Renderer、Gateway 和 WebSocket 启动", async () => {
-      await waitForHttp(`${GATEWAY_URL}/api/health`, 60_000);
+      await waitForHttp(`${gatewayUrl}/api/health`, 60_000);
       await testId("compose-input").waitFor({ state: "visible", timeout: 60_000 });
       await waitFor("WebSocket 连接", async () => (await bodyText()).includes("已连接"), 60_000);
-      const configResponse = await fetch(`${GATEWAY_URL}/api/config`);
+      const configResponse = await fetch(`${gatewayUrl}/api/config`);
       assert(configResponse.ok, "Gateway 配置状态不可读取");
       const config = await configResponse.json();
+      assert(!("agent" in config), "公开配置仍然暴露 Agent 内部信息");
+      assert(!("mode" in config), "公开配置仍然暴露已废弃的 Agent 模式");
+      assert(!("imageHostConfigured" in config), "公开配置仍然暴露图片链路状态");
       report.capabilities = {
-        mode: config.mode,
         promptMode: config.promptMode,
-        visionConfigured: config.visionConfigured === true,
-        imageHostConfigured: config.imageHostConfigured === true,
-        searchConfigured: config.searchConfigured === true,
-        mcpConfigured: config.mcpConfigured === true,
         toolsets: Array.isArray(config.toolsets) ? config.toolsets : [],
       };
     });
@@ -591,15 +594,54 @@ async function main() {
       }
     });
 
-    await recordCase("SET-01", "Agent 设置和 Toolset 开关", async () => {
+    await recordCase("SET-01", "智能体设置和工具集开关", async () => {
       await click("settings-open");
       await testId("settings-tab-agent").click();
-      await testId("agent-auto-memory").click();
+      assert((await bodyText()).includes("智能体 Agent"), "设置导航没有显示中文优先的智能体标签");
+      assert((await bodyText()).includes("工具集 Toolsets"), "工具集分组没有显示中文优先标签");
+      await snapshot("settings-agent");
+      assert(await testId("agent-mode").count() === 0, "已废弃的 Agent 模式选择仍然显示");
+      assert(await testId("main-agent-model").count() === 0, "内部模型信息仍然显示");
+      assert(!(await bodyText()).includes("Legacy"), "已废弃的 Legacy 模式仍然显示");
+      assert(!(await bodyText()).includes("gpt-5.6-luna"), "内部模型 ID 仍然显示");
+
+      const autoMemory = testId("agent-auto-memory");
+      const autoMemoryBefore = await autoMemory.getAttribute("aria-checked");
+      assert(await autoMemory.getAttribute("role") === "switch", "自动整理记忆没有使用开关控件");
+      await autoMemory.click();
       await waitFor("自动记忆保存", async () => (await page.locator(".agent-status").innerText()).includes("配置已保存"));
-      await testId("agent-auto-memory").click();
+      assert((await autoMemory.getAttribute("aria-checked")) !== autoMemoryBefore, "自动整理记忆开关状态没有更新");
+      await autoMemory.click();
+      await waitFor("自动记忆恢复", async () => (await page.locator(".agent-status").innerText()).includes("配置已保存"));
+
+      const toolsets = page.locator('[data-testid^="agent-toolset-"]');
+      assert(await toolsets.count() === 10, "工具集开关数量不完整");
+      for (let index = 0; index < await toolsets.count(); index += 1) {
+        const toolset = toolsets.nth(index);
+        assert(await toolset.getAttribute("role") === "switch", "工具集没有使用开关控件");
+        assert(["true", "false"].includes(await toolset.getAttribute("aria-checked")), "工具集开关缺少有效状态");
+        assert((await toolset.getAttribute("aria-label"))?.trim(), "工具集开关缺少可访问名称");
+      }
+
+      const mcp = testId("agent-toolset-mcp");
+      const mcpBefore = await mcp.getAttribute("aria-checked");
+      await mcp.click();
+      await waitFor("MCP 工具集保存", async () => (await page.locator(".agent-status").innerText()).includes("配置已保存"));
+      const mcpAfter = await mcp.getAttribute("aria-checked");
+      assert(mcpAfter !== mcpBefore, "MCP 工具集开关状态没有更新");
+
+      await click("settings-close");
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await testId("compose-input").waitFor({ state: "visible", timeout: 60_000 });
+      await closeSidebarOverlayIfVisible();
+      await click("settings-open");
+      await testId("settings-tab-agent").click();
+      const mcpAfterReload = await testId("agent-toolset-mcp").getAttribute("aria-checked");
+      assert(mcpAfterReload === mcpAfter, "工具集开关状态刷新后没有保持");
       await testId("agent-toolset-mcp").click();
-      await testId("agent-toolset-mcp").click();
-      await testId("agent-prompt-tab-project").click();
+      await waitFor("MCP 工具集恢复", async () => (await page.locator(".agent-status").innerText()).includes("配置已保存"));
+
+      await testId("agent-prompt-tab-global").click();
       await testId("agent-prompt-editor").fill("[YC-E2E] 项目提示词保存测试");
       await testId("agent-prompt-save").click();
       await waitFor("提示词保存", async () => (await page.locator(".agent-status").innerText()).includes("提示词已保存"));

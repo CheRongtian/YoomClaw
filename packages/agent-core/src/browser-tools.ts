@@ -1,132 +1,229 @@
+import type { BrowserLocator, BrowserTarget, JSONSchema } from "@yoomclaw/protocol";
+import { BrowserControlError } from "./browser.js";
 import type { BuiltinTool, ToolOutcome } from "./tools.js";
+
+const TARGET_SCHEMA: JSONSchema = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["css", "role", "text", "label", "placeholder", "testId"] },
+    value: { type: "string" },
+    name: { type: "string" },
+    exact: { type: "boolean" },
+    index: { type: "number" },
+  },
+  required: ["kind", "value"],
+};
 
 function ok(value: unknown): ToolOutcome {
   return { result: JSON.stringify(value, null, 2), isError: false };
 }
 
-function fail(err: unknown): ToolOutcome {
-  return { result: err instanceof Error ? err.message : String(err), isError: true };
+function fail(error: unknown, fallbackCode = "BROWSER_ACTION_FAILED"): ToolOutcome {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error instanceof BrowserControlError ? error.code : fallbackCode;
+  return { result: message, isError: true, code };
 }
 
+function tabId(args: Record<string, unknown>): string | undefined {
+  return typeof args.tabId === "string" && args.tabId.trim() ? args.tabId.trim() : undefined;
+}
+
+function locatorArg(args: Record<string, unknown>): BrowserLocator | null {
+  if (typeof args.target === "object" && args.target !== null && !Array.isArray(args.target)) {
+    const target = args.target as Record<string, unknown>;
+    if (
+      typeof target.kind === "string"
+      && typeof target.value === "string"
+      && ["css", "role", "text", "label", "placeholder", "testId"].includes(target.kind)
+    ) {
+      return {
+        kind: target.kind as BrowserTarget["kind"],
+        value: target.value,
+        ...(typeof target.name === "string" ? { name: target.name } : {}),
+        ...(typeof target.exact === "boolean" ? { exact: target.exact } : {}),
+        ...(Number.isInteger(target.index) ? { index: Number(target.index) } : {}),
+      } satisfies BrowserTarget;
+    }
+  }
+  return typeof args.selector === "string" && args.selector.trim() ? args.selector : null;
+}
+
+function locatorDescription(args: Record<string, unknown>): string {
+  const target = locatorArg(args);
+  return typeof target === "string"
+    ? target
+    : target
+      ? `${target.kind}:${target.value}`
+      : "unknown target";
+}
+
+function actionOptions(args: Record<string, unknown>): { tabId?: string } {
+  const selected = tabId(args);
+  return selected ? { tabId: selected } : {};
+}
+
+const browserTabs: BuiltinTool = {
+  risk: "safe",
+  definition: {
+    name: "browser_tabs",
+    description: "List connected browser tabs or select one tab for subsequent browser actions.",
+    toolset: "browser",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "select"] },
+        tabId: { type: "string" },
+      },
+      required: ["action"],
+    },
+  },
+  async run(args, ctx) {
+    if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+    try {
+      if (args.action === "list") return ok(await ctx.browser.listTabs());
+      if (args.action === "select") {
+        const selected = tabId(args);
+        if (!selected) return { result: "select requires tabId", isError: true, code: "BROWSER_TAB_REQUIRED" };
+        return ok(await ctx.browser.selectTab(selected));
+      }
+      return { result: "browser_tabs action must be list or select", isError: true, code: "BROWSER_TABS_ACTION_INVALID" };
+    } catch (error) {
+      return fail(error, "BROWSER_TABS_FAILED");
+    }
+  },
+};
+
 export const BROWSER_TOOLS: BuiltinTool[] = [
+  browserTabs,
   {
     risk: "safe",
     definition: {
       name: "browser_snapshot",
-      description: "读取当前 Chrome 页面地址、标题和可见文本。",
+      description: "Read the current browser page URL, title, visible text, and accessibility snapshot.",
       toolset: "browser",
-      parameters: { type: "object", properties: {} },
+      parameters: {
+        type: "object",
+        properties: { tabId: { type: "string" } },
+      },
     },
-    async run(_args, ctx) {
-      if (!ctx.browser) return fail("浏览器工具未初始化");
-      try { return ok(await ctx.browser.snapshot()); } catch (err) { return fail(err); }
+    async run(args, ctx) {
+      if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+      try { return ok(await ctx.browser.snapshot(actionOptions(args))); } catch (error) { return fail(error); }
     },
   },
   {
     risk: "safe",
     definition: {
       name: "browser_navigate",
-      description: "打开一个 http/https 网页。",
+      description: "Open an http/https page in the selected browser tab.",
       toolset: "browser",
       parameters: {
         type: "object",
-        properties: { url: { type: "string", description: "完整网页 URL" } },
+        properties: { url: { type: "string" }, tabId: { type: "string" } },
         required: ["url"],
       },
     },
     async run(args, ctx) {
-      if (!ctx.browser) return fail("浏览器工具未初始化");
-      try { return ok(await ctx.browser.navigate(String(args.url ?? ""))); } catch (err) { return fail(err); }
+      if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+      const url = typeof args.url === "string" ? args.url : "";
+      if (!url.trim()) return { result: "navigate requires url", isError: true, code: "BROWSER_URL_REQUIRED" };
+      try { return ok(await ctx.browser.navigate(url, actionOptions(args))); } catch (error) { return fail(error, "BROWSER_NAVIGATE_FAILED"); }
     },
   },
   {
     risk: "safe",
     definition: {
       name: "browser_click",
-      description: "点击当前网页中的 CSS selector。提交、发送、购买等动作需要先确认。",
+      description: "Click exactly one browser element using a legacy CSS selector or a semantic target.",
       toolset: "browser",
       parameters: {
         type: "object",
-        properties: { selector: { type: "string", description: "CSS selector" } },
-        required: ["selector"],
+        properties: { selector: { type: "string" }, target: TARGET_SCHEMA, tabId: { type: "string" } },
       },
     },
     assess(args) {
-      const selector = String(args.selector ?? "");
-      return /submit|send|buy|pay|delete|remove|login/i.test(selector)
-        ? `点击可能提交或改变网页状态：${selector}`
-        : null;
+      const description = locatorDescription(args);
+      return /submit|send|buy|pay|delete|remove|login|confirm|close/i.test(description)
+        ? `Browser click may submit or change state: ${description}`
+        : `Browser click will target ${description}.`;
     },
     async run(args, ctx) {
-      if (!ctx.browser) return fail("浏览器工具未初始化");
-      try { return ok(await ctx.browser.click(String(args.selector ?? ""))); } catch (err) { return fail(err); }
+      if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+      const target = locatorArg(args);
+      if (!target) return { result: "click requires selector or target", isError: true, code: "BROWSER_TARGET_REQUIRED" };
+      try { return ok(await ctx.browser.click(target, actionOptions(args))); } catch (error) { return fail(error, "BROWSER_CLICK_FAILED"); }
     },
   },
   {
     risk: "confirm",
     definition: {
       name: "browser_type",
-      description: "在网页输入框中输入文本。密码或敏感信息禁止自动输入。",
+      description: "Fill exactly one non-password browser field. Input text is never written to logs or confirmation payloads.",
       toolset: "browser",
       parameters: {
         type: "object",
         properties: {
-          selector: { type: "string", description: "CSS selector" },
-          text: { type: "string", description: "输入文本" },
+          selector: { type: "string" },
+          target: TARGET_SCHEMA,
+          text: { type: "string" },
+          tabId: { type: "string" },
         },
-        required: ["selector", "text"],
       },
     },
     assess(args) {
-      return `即将在网页元素 ${String(args.selector ?? "")} 中输入内容，需要确认`;
+      return `Browser input will be entered into ${locatorDescription(args)}.`;
     },
     async run(args, ctx) {
-      if (!ctx.browser) return fail("浏览器工具未初始化");
-      try { return ok(await ctx.browser.type(String(args.selector ?? ""), String(args.text ?? ""))); } catch (err) { return fail(err); }
+      if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+      const target = locatorArg(args);
+      const text = typeof args.text === "string" ? args.text : null;
+      if (!target || text === null) return { result: "type requires selector/target and text", isError: true, code: "BROWSER_TYPE_REQUIRED" };
+      try { return ok(await ctx.browser.type(target, text, actionOptions(args))); } catch (error) { return fail(error, "BROWSER_TYPE_FAILED"); }
     },
   },
   {
     risk: "safe",
     definition: {
       name: "browser_scroll",
-      description: "向上或向下滚动网页并读取新的可见文本。",
+      description: "Scroll the selected browser tab and read the updated visible state.",
       toolset: "browser",
       parameters: {
         type: "object",
-        properties: { direction: { type: "string", enum: ["up", "down"], description: "方向" } },
+        properties: { direction: { type: "string", enum: ["up", "down"] }, tabId: { type: "string" } },
         required: ["direction"],
       },
     },
     async run(args, ctx) {
-      if (!ctx.browser) return fail("浏览器工具未初始化");
-      const direction = args.direction === "up" ? "up" : "down";
-      try { return ok(await ctx.browser.scroll(direction)); } catch (err) { return fail(err); }
+      if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+      const direction = args.direction === "up" || args.direction === "down" ? args.direction : null;
+      if (!direction) return { result: "scroll requires direction up or down", isError: true, code: "BROWSER_DIRECTION_REQUIRED" };
+      try { return ok(await ctx.browser.scroll(direction, actionOptions(args))); } catch (error) { return fail(error, "BROWSER_SCROLL_FAILED"); }
     },
   },
   {
     risk: "safe",
     definition: {
       name: "browser_back",
-      description: "返回当前页面的上一页。",
+      description: "Go back in the selected browser tab.",
       toolset: "browser",
-      parameters: { type: "object", properties: {} },
+      parameters: { type: "object", properties: { tabId: { type: "string" } } },
     },
-    async run(_args, ctx) {
-      if (!ctx.browser) return fail("浏览器工具未初始化");
-      try { return ok(await ctx.browser.back()); } catch (err) { return fail(err); }
+    async run(args, ctx) {
+      if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+      try { return ok(await ctx.browser.back(actionOptions(args))); } catch (error) { return fail(error, "BROWSER_BACK_FAILED"); }
     },
   },
   {
     risk: "safe",
     definition: {
       name: "browser_screenshot",
-      description: "保存当前 Chrome 页面截图到本地 Agent 数据目录。",
+      description: "Save a screenshot of the selected browser tab under the agent data directory.",
       toolset: "browser",
-      parameters: { type: "object", properties: {} },
+      parameters: { type: "object", properties: { tabId: { type: "string" } } },
     },
-    async run(_args, ctx) {
-      if (!ctx.browser) return fail("浏览器工具未初始化");
-      try { return ok(await ctx.browser.screenshot()); } catch (err) { return fail(err); }
+    async run(args, ctx) {
+      if (!ctx.browser) return { result: "Browser tool is unavailable", isError: true, code: "BROWSER_UNAVAILABLE" };
+      try { return ok(await ctx.browser.screenshot(actionOptions(args))); } catch (error) { return fail(error, "BROWSER_SCREENSHOT_FAILED"); }
     },
   },
 ];

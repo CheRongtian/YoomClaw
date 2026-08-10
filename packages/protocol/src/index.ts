@@ -182,7 +182,6 @@ export type ToolsetId =
   | "memory"
   | "skills"
   | "browser"
-  | "vision"
   | "planning"
   | "web"
   | "execution"
@@ -288,11 +287,6 @@ export type AgentEvent =
       url?: string;
       message?: string;
     }
-  | {
-      type: "vision";
-      status: "started" | "completed" | "error";
-      message?: string;
-    }
   | { type: "plan"; plan: PlanState }
   | {
       type: "subagent";
@@ -379,8 +373,6 @@ export interface AgentConfig {
   enabledTools?: string[];
   /** Enabled Hermes-style toolsets. */
   toolsets?: ToolsetId[];
-  /** Prompt-driven agent engine. */
-  mode?: "legacy" | "hermes";
   /** Where the main agent's behavior prompt is maintained. */
   promptMode?: "provider" | "local";
   /** Run the separate provider-backed memory review after successful tasks. */
@@ -396,7 +388,6 @@ export interface AgentConfig {
 // ===== Hermes-style runtime/config types =====
 
 export interface RuntimeConfig {
-  mode: "legacy" | "hermes";
   promptMode: "provider" | "local";
   autoMemoryReview: boolean;
   workspace: string;
@@ -404,7 +395,7 @@ export interface RuntimeConfig {
   toolsets: ToolsetId[];
   safetyMode: SafetyMode;
   browserCdpUrl?: string;
-  visionEnabled: boolean;
+  computerEnabled?: boolean;
 }
 
 export interface SkillSummary {
@@ -421,5 +412,58 @@ export interface BrowserStatus {
   cdpUrl: string;
   pageUrl?: string;
   title?: string;
+  activeTabId?: string;
+  message?: string;
+}
+
+export type BrowserTargetKind =
+  | "css"
+  | "role"
+  | "text"
+  | "label"
+  | "placeholder"
+  | "testId";
+
+export interface BrowserTarget {
+  kind: BrowserTargetKind;
+  value: string;
+  name?: string;
+  exact?: boolean;
+  index?: number;
+}
+
+export type BrowserLocator = string | BrowserTarget;
+
+export interface BrowserActionOptions {
+  tabId?: string;
+}
+
+export interface BrowserTab {
+  id: string;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+export interface BrowserSnapshot {
+  url: string;
+  title: string;
+  text: string;
+  aria?: string;
+  tabId?: string;
+}
+
+export interface BrowserScreenshot {
+  url: string;
+  title: string;
+  path?: string;
+  tabId?: string;
+}
+
+export interface ComputerStatus {
+  enabled: boolean;
+  available: boolean;
+  platform: string;
+  helperVersion?: string;
   message?: string;
 }

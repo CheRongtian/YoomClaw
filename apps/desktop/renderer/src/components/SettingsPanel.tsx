@@ -13,7 +13,7 @@ interface Props {
 type TabId = "agent" | "general" | "appearance" | "about";
 
 const TABS: { id: TabId; label: string; Icon: typeof SlidersIcon }[] = [
-  { id: "agent", label: "Agent", Icon: SlidersIcon },
+  { id: "agent", label: "智能体 Agent", Icon: SlidersIcon },
   { id: "general", label: "通用", Icon: SlidersIcon },
   { id: "appearance", label: "外观", Icon: PaletteIcon },
   { id: "about", label: "关于", Icon: InfoIcon },
@@ -88,7 +88,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
         }
         .settings-panel {
           display: flex;
-          width: 660px;
+          width: 720px;
           max-width: 94vw;
           height: 540px;
           max-height: 86vh;
@@ -99,29 +99,29 @@ export default function SettingsPanel({ open, onClose }: Props) {
           overflow: hidden;
         }
         .sp-nav {
-          width: 172px;
+          width: 184px;
           flex-shrink: 0;
           background: var(--bg-panel);
           border-right: 1px solid var(--border);
-          padding: 14px 10px;
+          padding: 18px 12px;
           display: flex;
           flex-direction: column;
-          gap: 2px;
+          gap: 4px;
         }
         .sp-nav-title {
-          font-size: 12px;
+          font-size: 13px;
           font-weight: 600;
           color: var(--text-muted);
-          padding: 2px 10px 12px;
+          padding: 2px 10px 14px;
         }
         .nav-item {
           display: flex;
           align-items: center;
-          gap: 9px;
+          gap: 10px;
           width: 100%;
-          padding: 8px 10px;
-          border-radius: 7px;
-          font-size: 13px;
+          padding: 10px 11px;
+          border-radius: 8px;
+          font-size: 13.5px;
           color: var(--text-secondary);
           text-align: left;
           transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
@@ -133,6 +133,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
         .nav-item.active {
           background: color-mix(in srgb, var(--primary) 14%, transparent);
           color: var(--text);
+          box-shadow: inset 2px 0 0 var(--primary);
         }
         .nav-item.active :global(svg) {
           color: var(--primary);
@@ -147,19 +148,19 @@ export default function SettingsPanel({ open, onClose }: Props) {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 13px 14px 13px 18px;
+          padding: 15px 18px 15px 22px;
           border-bottom: 1px solid var(--border);
           flex-shrink: 0;
         }
         .sp-title {
-          font-size: 14px;
+          font-size: 15px;
           font-weight: 600;
           color: var(--text);
         }
         .sp-close {
-          width: 28px;
-          height: 28px;
-          border-radius: 7px;
+          width: 30px;
+          height: 30px;
+          border-radius: 8px;
           color: var(--text-muted);
           display: flex;
           align-items: center;
@@ -172,7 +173,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
         .sp-body {
           flex: 1;
           overflow-y: auto;
-          padding: 16px 18px 22px;
+          padding: 20px 22px 28px;
         }
       `}</style>
     </div>

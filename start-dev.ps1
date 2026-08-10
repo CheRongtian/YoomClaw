@@ -4,6 +4,7 @@
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
+$env:ELECTRON_MIRROR = "https://registry.npmmirror.com/-/binary/electron/"
 
 # Load .env (the Gateway child process reads JIMO credentials via --env-file)
 if (Test-Path "$root\.env") {
@@ -39,10 +40,22 @@ Write-Host "Starting Claw Desktop..." -ForegroundColor Cyan
 
 $electronExe = Join-Path $root "node_modules\electron\dist\electron.exe"
 if (-not (Test-Path $electronExe)) {
+    $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+    if ($pnpm) {
+        Write-Host "Electron runtime missing; rebuilding from the configured mirror..." -ForegroundColor Yellow
+        & $pnpm.Source rebuild electron --reporter=append-only
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Electron rebuild failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+        }
+    }
+}
+
+if (-not (Test-Path $electronExe)) {
     $found = Get-ChildItem -Path "$root\node_modules" -Recurse -Filter "electron.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($found) { $electronExe = $found.FullName }
     else {
-        Write-Error "electron.exe not found under $root\node_modules"
+        Write-Error "electron.exe not found under $root\node_modules. Run: pnpm rebuild electron"
         exit 1
     }
 }

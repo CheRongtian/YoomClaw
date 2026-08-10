@@ -104,12 +104,17 @@ export function loadRuntimeConfig(
   } catch {
     // First launch or an older data directory without runtime config.
   }
+  const persistedComputerEnabled = typeof persisted.computerEnabled === "boolean"
+    ? persisted.computerEnabled
+    : undefined;
+  const envComputerEnabled = env.YOOMCLAW_COMPUTER_ENABLED === "true";
+  const computerEnabled = overrides.computerEnabled ?? persistedComputerEnabled ?? envComputerEnabled;
   const rawToolsets = env.YOOMCLAW_TOOLSETS?.trim()
     ? env.YOOMCLAW_TOOLSETS.split(",").map((x) => x.trim()).filter(Boolean)
     : undefined;
   const persistedToolsets = Array.isArray(persisted.toolsets)
     ? persisted.toolsets.filter((value): value is RuntimeConfig["toolsets"][number] =>
-        ["coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration", "mcp", "computer"].includes(String(value)),
+        ["coding", "memory", "skills", "browser", "planning", "web", "execution", "orchestration", "mcp", "computer"].includes(String(value)),
       )
     : undefined;
   const toolsets = (overrides.toolsets ?? persistedToolsets ?? rawToolsets ?? [
@@ -117,18 +122,12 @@ export function loadRuntimeConfig(
     "memory",
     "skills",
     "browser",
-    "vision",
     "planning",
     "web",
     "execution",
     "orchestration",
+    ...(computerEnabled ? ["computer"] : []),
   ]) as RuntimeConfig["toolsets"];
-  const persistedMode = persisted.mode === "legacy" || persisted.mode === "hermes"
-    ? persisted.mode
-    : undefined;
-  const envMode = env.YOOMCLAW_AGENT_MODE === "legacy" || env.YOOMCLAW_AGENT_MODE === "hermes"
-    ? env.YOOMCLAW_AGENT_MODE
-    : undefined;
   const persistedSafety = persisted.safetyMode === "confirm" || persisted.safetyMode === "workspace-auto" || persisted.safetyMode === "full-access"
     ? persisted.safetyMode
     : undefined;
@@ -145,11 +144,7 @@ export function loadRuntimeConfig(
     ? persisted.autoMemoryReview
     : undefined;
   const envAutoMemoryReview = env.YOOMCLAW_AUTO_MEMORY_REVIEW === "true";
-
   return {
-    mode:
-      overrides.mode ??
-      (envMode === "legacy" ? "legacy" : persistedMode ?? envMode ?? "hermes"),
     promptMode:
       overrides.promptMode ??
       persistedPromptMode ??
@@ -169,10 +164,7 @@ export function loadRuntimeConfig(
       "workspace-auto",
     browserCdpUrl:
       overrides.browserCdpUrl || persisted.browserCdpUrl || env.YOOMCLAW_BROWSER_CDP_URL || "http://127.0.0.1:9222",
-    visionEnabled:
-      overrides.visionEnabled ??
-      persisted.visionEnabled ??
-      Boolean(env.JIMO_VISION_SHARE_ID && env.JIMO_VISION_AUTHORIZATION),
+    computerEnabled,
   };
 }
 

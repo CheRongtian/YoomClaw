@@ -52,6 +52,7 @@ export default function AboutSettings() {
           <div className="grp-title">数据目录</div>
           <div className="path-box">{info.dataDir}</div>
           <button
+            type="button"
             className="open-btn"
             data-testid="about-open-data-dir"
             onClick={() => window.yoomclaw?.openDataDir()}
@@ -109,12 +110,11 @@ export default function AboutSettings() {
           padding-top: 14px;
         }
         .grp-title {
-          font-size: 11px;
+          font-size: 11.5px;
           font-weight: 600;
-          letter-spacing: 0.6px;
-          text-transform: uppercase;
+          letter-spacing: 0.3px;
           color: var(--text-muted);
-          margin: 18px 0 9px;
+          margin: 22px 0 9px;
         }
         .path-box {
           font-size: 11.5px;
@@ -132,17 +132,20 @@ export default function AboutSettings() {
           display: inline-flex;
           align-items: center;
           gap: 7px;
+          min-height: 34px;
           padding: 8px 13px;
           border-radius: 8px;
           border: 1px solid var(--border);
           background: var(--bg-panel);
           color: var(--text-secondary);
           font-size: 12.5px;
+          font-weight: 500;
           transition: border-color 0.15s, color 0.15s;
         }
         .open-btn:hover {
           border-color: var(--border-active);
           color: var(--text);
+          background: color-mix(in srgb, var(--bg-panel) 84%, var(--primary));
         }
       `}</style>
     </>

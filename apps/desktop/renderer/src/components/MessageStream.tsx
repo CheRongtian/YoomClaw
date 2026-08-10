@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { AgentEvent, ChatMessage, ContentPart, PlanState } from "@yoomclaw/protocol";
 import ReactMarkdown from "react-markdown";
@@ -10,6 +10,7 @@ import "katex/dist/katex.min.css";
 import SpiralLogo from "./SpiralLogo";
 import {
   WrenchIcon,
+  ChevronRightIcon,
   EditIcon,
   RefreshIcon,
   CopyIcon,
@@ -19,6 +20,25 @@ import {
   ClockIcon,
   LoaderIcon,
 } from "./icons";
+
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
+const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex, rehypeHighlight];
+const MARKDOWN_COMPONENTS = {
+  code: ({ inline, className, children, ...props }: any) => {
+    if (inline) {
+      return (
+        <code className="inline-code" {...props}>
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  },
+};
 
 export interface ToolCard {
   callId: string;
@@ -165,6 +185,7 @@ export default function MessageStream({
           min-height: 0;
           min-width: 0;
           overflow-y: auto;
+          overflow-anchor: none;
           padding: 16px 0 20px;
           scroll-behavior: auto;
         }
@@ -197,7 +218,7 @@ export function messageTextWithPaths(message: ChatMessage): string {
   ].filter(Boolean).join("\n");
 }
 
-function PlanCard({ plan }: { plan: PlanState }) {
+const PlanCard = memo(function PlanCard({ plan }: { plan: PlanState }) {
   const completed = plan.items.filter((item) => item.status === "completed").length;
   return (
     <section className="plan-card" aria-label="当前任务计划">
@@ -237,34 +258,49 @@ function PlanCard({ plan }: { plan: PlanState }) {
       `}</style>
     </section>
   );
-}
+});
 
-function MarkdownContent({ text }: { text: string }) {
+const MarkdownContent = memo(function MarkdownContent({ text }: { text: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex, rehypeHighlight]}
-      components={{
-        code: ({ inline, className, children, ...props }: any) => {
-          if (inline) {
-            return (
-              <code className="inline-code" {...props}>
-                {children}
-              </code>
-            );
-          }
-          return (
-            <code className={className} {...props}>
-              {children}
-            </code>
-          );
-        },
-      }}
+      remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+      rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+      components={MARKDOWN_COMPONENTS}
     >
       {text}
     </ReactMarkdown>
   );
+});
+
+/** Keep the hot streaming path to a single text node. Full Markdown parsing
+ * (especially syntax highlighting and KaTeX) happens once after completion. */
+function StreamingContent({ text }: { text: string }) {
+  return (
+    <div className="streaming-text">
+      <span>{text}</span>
+      <span className="streaming-caret" aria-hidden="true" />
+    </div>
+  );
 }
+
+const SIGNAL_BARS = [0, 1, 2, 3, 4];
+
+const ResponseSignal = memo(function ResponseSignal({ label }: { label: string }) {
+  return (
+    <div className="response-signal" role="status" aria-live="polite">
+      <span className="signal-core" aria-hidden="true">
+        <span className="signal-ring signal-ring-one" />
+        <span className="signal-ring signal-ring-two" />
+        <span className="signal-dot" />
+      </span>
+      <span className="signal-wave" aria-hidden="true">
+        {SIGNAL_BARS.map((bar) => <span key={bar} />)}
+      </span>
+      <span className="signal-label">{label}</span>
+      <span className="signal-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
+    </div>
+  );
+});
 
 function isRenderableUrl(value: string): boolean {
   return /^(?:https?:|data:)/i.test(value);
@@ -322,7 +358,7 @@ function LocalPathList({ paths }: { paths: string[] }) {
   );
 }
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   message,
   index,
   onEditUser,
@@ -581,9 +617,9 @@ function MessageRow({
       `}</style>
     </div>
   );
-}
+});
 
-function HistoricalToolsRow({ tools }: { tools: ToolCard[] }) {
+const HistoricalToolsRow = memo(function HistoricalToolsRow({ tools }: { tools: ToolCard[] }) {
   return (
     <div className="message-row assistant historical-tools-row">
       <div className="message-avatar">
@@ -593,7 +629,10 @@ function HistoricalToolsRow({ tools }: { tools: ToolCard[] }) {
         <div className="tools">
           {tools.map((tool) => <ToolCardView key={tool.callId} card={tool} />)}
         </div>
-        <div className="history-label">历史工具调用</div>
+        <div className="history-label">
+          <span>执行记录</span>
+          <span>{tools.length} 个动作</span>
+        </div>
       </div>
       <style jsx>{`
         .historical-tools-row { margin-bottom: 8px; animation-delay: 40ms; }
@@ -603,104 +642,173 @@ function HistoricalToolsRow({ tools }: { tools: ToolCard[] }) {
           gap: 8px;
         }
         .history-label {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
           margin-top: 5px;
           color: var(--text-muted);
           font-size: 11px;
         }
+        .history-label span:last-child { color: var(--text-dim); font-size: 10px; }
       `}</style>
     </div>
   );
-}
+});
 
-function LiveRow({ live }: { live: LiveAssistant }) {
+const LiveRow = memo(function LiveRow({ live }: { live: LiveAssistant }) {
+  const responseLabel = live.text
+    ? "正在生成回复"
+    : (live.progress?.name ?? "正在准备回复");
   return (
     <div className="message-row assistant live-row">
       <div className="message-avatar">
         <SpiralLogo size={18} />
       </div>
-      <div className="message-bubble">
-        {live.progress && (
-          <div className="progress">
-            <div className="progress-label">
-              <LoaderIcon size={13} className="spinner" /> {live.progress.name}
-              <span className="progress-pct">{live.progress.percent}%</span>
-            </div>
-            <div className="progress-track">
-              <div
-                className="progress-fill"
-                style={{ width: `${live.progress.percent}%` }}
-              />
-            </div>
-          </div>
+      <div className="message-bubble live-bubble">
+        {(live.progress || live.text) && (
+          <ResponseSignal label={responseLabel} />
         )}
 
         {live.tools.length > 0 && (
-          <div className="tools">
-            {live.tools.map((t) => (
-              <ToolCardView key={t.callId} card={t} />
-            ))}
-          </div>
+          <>
+            <div className="live-tools-label">
+              <span>执行步骤</span>
+              <span>{live.tools.length} 个动作</span>
+            </div>
+            <div className="tools">
+              {live.tools.map((t) => (
+                <ToolCardView key={t.callId} card={t} />
+              ))}
+            </div>
+          </>
         )}
 
         {live.text && (
           <div className="content">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex, rehypeHighlight]}
-              components={{
-                code: ({ inline, className, children, ...props }: any) => {
-                  if (inline) {
-                    return (
-                      <code className="inline-code" {...props}>
-                        {children}
-                      </code>
-                    );
-                  }
-                  return (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  );
-                },
-              }}
-            >
-              {live.text}
-            </ReactMarkdown>
+            <StreamingContent text={live.text} />
           </div>
         )}
       </div>
 
       <style jsx>{`
-        .progress {
-          margin-bottom: 10px;
-        }
-        .progress-label {
+        .response-signal {
+          position: relative;
           display: flex;
           align-items: center;
-          gap: 6px;
-          font-size: 12px;
-          color: var(--text-secondary);
-          margin-bottom: 4px;
-        }
-        .progress-pct {
-          margin-left: auto;
-          color: var(--text-muted);
-        }
-        .spinner {
-          display: inline-block;
-          color: var(--primary);
-          animation: yc-spin 0.85s linear infinite;
-        }
-        .progress-track {
-          height: 4px;
-          background: var(--bg-element);
-          border-radius: 2px;
+          min-height: 32px;
+          min-width: 0;
+          gap: 8px;
+          margin: 0 0 12px;
+          padding: 5px 10px 5px 7px;
           overflow: hidden;
+          isolation: isolate;
+          border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
+          border-radius: 999px;
+          background:
+            radial-gradient(circle at 16px 50%, color-mix(in srgb, var(--primary) 18%, transparent), transparent 21px),
+            linear-gradient(105deg, color-mix(in srgb, var(--primary) 8%, var(--assistant-bubble-bg)), var(--assistant-bubble-bg));
+          box-shadow: 0 5px 20px color-mix(in srgb, var(--primary) 8%, transparent), inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
         }
-        .progress-fill {
-          height: 100%;
+        .response-signal::before {
+          content: "";
+          position: absolute;
+          z-index: -1;
+          top: -80%;
+          left: -35%;
+          width: 34%;
+          height: 260%;
+          background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--primary) 20%, transparent), transparent);
+          transform: skewX(-18deg) translateX(-180%);
+          animation: yc-signal-sweep 2.8s ease-in-out infinite;
+          will-change: transform;
+        }
+        .signal-core {
+          position: relative;
+          display: grid;
+          width: 20px;
+          height: 20px;
+          flex: 0 0 20px;
+          place-items: center;
+        }
+        .signal-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
           background: var(--primary);
-          transition: width var(--motion-normal) var(--ease-standard);
+          box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 88%, transparent), 0 0 16px color-mix(in srgb, var(--primary) 32%, transparent);
+          animation: yc-signal-core 1.6s ease-in-out infinite;
+        }
+        .signal-ring {
+          position: absolute;
+          inset: 3px;
+          border: 1px solid color-mix(in srgb, var(--primary) 64%, transparent);
+          border-radius: 50%;
+          animation: yc-signal-ring 1.8s cubic-bezier(.2, .8, .2, 1) infinite;
+        }
+        .signal-ring-two {
+          animation-delay: .55s;
+        }
+        .signal-wave {
+          display: flex;
+          align-items: center;
+          width: 24px;
+          height: 20px;
+          gap: 2px;
+          flex: 0 0 24px;
+        }
+        .signal-wave span {
+          width: 2px;
+          height: 7px;
+          border-radius: 999px;
+          background: linear-gradient(to bottom, var(--secondary), var(--primary));
+          transform-origin: center;
+          animation: yc-signal-wave 1.05s ease-in-out infinite;
+        }
+        .signal-wave span:nth-child(2) { animation-delay: .12s; }
+        .signal-wave span:nth-child(3) { animation-delay: .24s; }
+        .signal-wave span:nth-child(4) { animation-delay: .36s; }
+        .signal-wave span:nth-child(5) { animation-delay: .48s; }
+        .signal-label {
+          min-width: 0;
+          overflow: hidden;
+          color: var(--text-secondary);
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: .01em;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .signal-dots {
+          display: inline-flex;
+          min-width: 17px;
+          color: var(--primary);
+          font-size: 14px;
+          font-weight: 700;
+          letter-spacing: 2px;
+          line-height: 1;
+        }
+        .signal-dots i {
+          font-style: normal;
+          animation: yc-signal-dot 1.2s ease-in-out infinite;
+        }
+        .signal-dots i:nth-child(2) { animation-delay: .16s; }
+        .signal-dots i:nth-child(3) { animation-delay: .32s; }
+        .live-bubble {
+          position: relative;
+        }
+        .live-tools-label {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin: 0 1px 7px;
+          color: var(--text-secondary);
+          font-size: 11px;
+          font-weight: 650;
+        }
+        .live-tools-label span:last-child {
+          color: var(--text-muted);
+          font-size: 10px;
+          font-weight: 400;
         }
         .tools {
           display: flex;
@@ -712,6 +820,21 @@ function LiveRow({ live }: { live: LiveAssistant }) {
           font-size: 14.5px;
           line-height: 1.7;
           word-break: break-word;
+        }
+        .streaming-text {
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+        .streaming-caret {
+          display: inline-block;
+          width: 2px;
+          height: 1.05em;
+          margin-left: 4px;
+          vertical-align: -.16em;
+          border-radius: 2px;
+          background: var(--primary);
+          box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 72%, transparent);
+          animation: yc-stream-caret 1s steps(1, end) infinite;
         }
         .content :global(p) {
           margin: 0 0 10px;
@@ -735,7 +858,7 @@ function LiveRow({ live }: { live: LiveAssistant }) {
       `}</style>
     </div>
   );
-}
+});
 
 interface SearchResultCard {
   title: string;
@@ -778,7 +901,10 @@ function documentMetadata(card: ToolCard): string[] {
   return labels;
 }
 
-function ToolCardView({ card }: { card: ToolCard }) {
+const ToolCardView = memo(function ToolCardView({ card }: { card: ToolCard }) {
+  const [expanded, setExpanded] = useState(() => card.status !== "done");
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
   const statusLabel: Record<ToolCard["status"], string> = {
     pending: "等待确认",
     running: "执行中",
@@ -794,48 +920,124 @@ function ToolCardView({ card }: { card: ToolCard }) {
         : <CircleCheckIcon size={14} />;
   const searchResults = parseSearchResults(card);
   const documentLabels = documentMetadata(card);
+  const duration = formatToolDuration(card.durationMs);
+  const summary = toolSummary(card, searchResults, documentLabels);
+
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (card.status === "pending" || card.status === "running" || card.status === "error") {
+      setExpanded(true);
+    } else if (card.status === "done") {
+      setExpanded(false);
+    }
+  }, [card.status]);
+
+  const copyResult = async () => {
+    if (card.result === undefined || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(card.result);
+      setCopied(true);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopied(false);
+      }, 1200);
+    } catch {
+      // Clipboard permissions are optional in browser mode.
+    }
+  };
+
   return (
-    <div className={`tool-card ${card.status}`}>
+    <div
+      className={`tool-card ${card.status} ${expanded ? "is-expanded" : "is-collapsed"}`}
+      data-testid="tool-card"
+      data-tool-name={card.name}
+      data-tool-status={card.status}
+    >
       <div className="tool-head">
         <span className="tool-icon">
-          {card.status === "running" ? statusIcon : <WrenchIcon size={14} />}
+          <WrenchIcon size={14} />
         </span>
-        <span className="tool-name">{card.name}</span>
+        <div className="tool-title">
+          <span className="tool-label">{toolLabel(card.name)}</span>
+          <span className="tool-name">{card.name}</span>
+        </div>
+        {duration && <span className="tool-duration">{duration}</span>}
         <span className={`tool-status ${card.status}`}>
+          {statusIcon}
           {statusLabel[card.status]}
         </span>
+        <button
+          type="button"
+          className="tool-toggle"
+          aria-expanded={expanded}
+          aria-label={expanded ? `收起${toolLabel(card.name)}详情` : `展开${toolLabel(card.name)}详情`}
+          title={expanded ? "收起详情" : "展开详情"}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <ChevronRightIcon size={14} />
+        </button>
       </div>
-      {Object.keys(card.args).length > 0 && (
-        <pre className="tool-args">{JSON.stringify(card.args, null, 2)}</pre>
-      )}
+      <div className={`tool-summary ${card.status === "error" ? "err" : ""}`}>
+        <span>{summary}</span>
+        {!expanded && (Object.keys(card.args).length > 0 || card.result !== undefined) && (
+          <span className="tool-summary-hint">点击查看详情</span>
+        )}
+      </div>
       {documentLabels.length > 0 && (
         <div className="tool-tags">
           {documentLabels.map((label) => <span key={label}>{label}</span>)}
         </div>
       )}
-      {card.result !== undefined && (
-        searchResults ? (
-          <div className="search-results">
-            {searchResults.map((item) => (
-              <a className="search-result" key={`${item.url}:${item.title}`} href={item.url} target="_blank" rel="noreferrer">
-                <span className="search-result-title">{item.title}</span>
-                <span className="search-result-url">{item.url}</span>
-                {item.snippet && <span className="search-result-snippet">{item.snippet}</span>}
-                {(item.source || item.publishedAt) && (
-                  <span className="search-result-meta">{[item.source, item.publishedAt].filter(Boolean).join(" · ")}</span>
-                )}
-              </a>
-            ))}
-          </div>
-        ) : (
-          <pre className={`tool-result ${card.isError ? "err" : ""}`}>
-            {card.result}
-          </pre>
-        )
-      )}
-      {card.code && <div className="tool-meta tool-code">{card.code}</div>}
-      {card.durationMs !== undefined && (
-        <div className="tool-meta">{card.durationMs}ms</div>
+      {expanded && (
+        <div className="tool-details">
+          {Object.keys(card.args).length > 0 && (
+            <div className="tool-section">
+              <div className="tool-section-head">
+                <span>输入参数</span>
+                <span className="tool-section-kind">JSON</span>
+              </div>
+              <pre className="tool-args">{JSON.stringify(card.args, null, 2)}</pre>
+            </div>
+          )}
+          {card.result !== undefined && (
+            <div className="tool-section">
+              <div className="tool-section-head">
+                <span>输出结果</span>
+                {searchResults
+                  ? <span className="tool-section-kind">{searchResults.length} 条结果</span>
+                  : (
+                    <button type="button" className="tool-copy" onClick={() => void copyResult()}>
+                      {copied ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
+                      {copied ? "已复制" : "复制"}
+                    </button>
+                  )}
+              </div>
+              {searchResults ? (
+                <div className="search-results">
+                  {searchResults.map((item) => (
+                    <a className="search-result" key={`${item.url}:${item.title}`} href={item.url} target="_blank" rel="noreferrer">
+                      <span className="search-result-title">{item.title}</span>
+                      <span className="search-result-url">{item.url}</span>
+                      {item.snippet && <span className="search-result-snippet">{item.snippet}</span>}
+                      {(item.source || item.publishedAt) && (
+                        <span className="search-result-meta">{[item.source, item.publishedAt].filter(Boolean).join(" · ")}</span>
+                      )}
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <pre className={`tool-result ${card.isError ? "err" : ""}`}>
+                  {card.result}
+                </pre>
+              )}
+            </div>
+          )}
+          {card.code && <div className="tool-meta tool-code">错误代码：{card.code}</div>}
+        </div>
       )}
 
       <style jsx>{`
@@ -844,58 +1046,93 @@ function ToolCardView({ card }: { card: ToolCard }) {
           min-width: 0;
           max-width: 100%;
           overflow: hidden;
-          border: 1px solid var(--border);
-          border-radius: 10px;
-          padding: 8px 10px;
-          background: var(--tool-call-bg);
+          border: 1px solid color-mix(in srgb, var(--tool-call-border) 84%, var(--border));
+          border-radius: 12px;
+          padding: 10px 11px;
+          background: color-mix(in srgb, var(--tool-call-bg) 82%, var(--assistant-bubble-bg));
+          box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text-muted) 14%, transparent);
           animation: yc-fade-up 220ms var(--ease-standard) both;
         }
         .tool-card.pending {
-          border-color: var(--status-attention);
+          border-color: color-mix(in srgb, var(--status-attention) 72%, var(--border));
+          box-shadow: inset 2px 0 0 var(--status-attention);
         }
         .tool-card.running {
-          border-color: var(--status-running);
+          border-color: color-mix(in srgb, var(--status-running) 72%, var(--border));
+          box-shadow: inset 2px 0 0 var(--status-running);
         }
         .tool-card.running::after {
           content: "";
           position: absolute;
           inset: 0;
           pointer-events: none;
-          background: linear-gradient(105deg, transparent 30%, color-mix(in srgb, var(--status-running) 8%, transparent) 50%, transparent 70%);
+          background: linear-gradient(105deg, transparent 30%, color-mix(in srgb, var(--status-running) 5%, transparent) 50%, transparent 70%);
           background-size: 220% 100%;
           animation: yc-shimmer 1.8s ease-in-out infinite;
         }
         .tool-card.error {
-          border-color: var(--status-unavailable);
+          border-color: color-mix(in srgb, var(--status-unavailable) 72%, var(--border));
+          box-shadow: inset 2px 0 0 var(--status-unavailable);
         }
         .tool-head {
+          position: relative;
+          z-index: 1;
           display: flex;
           align-items: center;
           min-width: 0;
-          gap: 6px;
+          gap: 7px;
           font-size: 13px;
         }
         .tool-icon {
-          color: var(--text-secondary);
+          width: 24px;
+          height: 24px;
+          align-items: center;
+          justify-content: center;
+          border-radius: 7px;
+          color: var(--primary);
+          background: color-mix(in srgb, var(--primary) 10%, transparent);
           display: flex;
           flex-shrink: 0;
         }
-        .tool-spinner { animation: yc-spin 0.85s linear infinite; color: var(--status-running); }
+        .tool-title {
+          display: grid;
+          min-width: 0;
+          gap: 1px;
+        }
+        .tool-label {
+          min-width: 0;
+          overflow: hidden;
+          color: var(--text);
+          font-size: 12px;
+          font-weight: 650;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
         .tool-name {
           min-width: 0;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          font-weight: 600;
+          color: var(--text-muted);
+          font-size: 10px;
           font-family: var(--font-mono);
         }
-        .tool-status {
+        .tool-duration {
           margin-left: auto;
+          color: var(--text-muted);
+          font: 10px var(--font-mono);
+          white-space: nowrap;
+        }
+        .tool-status {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
           font-size: 11px;
-          padding: 1px 7px;
-          border-radius: 10px;
+          padding: 3px 7px;
+          border-radius: 999px;
           background: var(--bg-element);
           color: var(--text-muted);
+          white-space: nowrap;
         }
         .tool-status.pending {
           background: color-mix(in srgb, var(--status-attention) 22%, transparent);
@@ -909,14 +1146,95 @@ function ToolCardView({ card }: { card: ToolCard }) {
           background: color-mix(in srgb, var(--status-unavailable) 22%, transparent);
           color: var(--status-unavailable);
         }
+        .tool-spinner { animation: yc-spin 0.85s linear infinite; }
+        .tool-toggle {
+          display: inline-flex;
+          width: 24px;
+          height: 24px;
+          flex: 0 0 24px;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid transparent;
+          border-radius: 7px;
+          color: var(--text-muted);
+        }
+        .tool-toggle:hover {
+          color: var(--text);
+          border-color: var(--border-active);
+          background: var(--bg-element);
+        }
+        .tool-toggle :global(svg) {
+          transition: transform var(--motion-fast) var(--ease-standard);
+        }
+        .tool-card.is-expanded .tool-toggle :global(svg) { transform: rotate(90deg); }
+        .tool-summary {
+          position: relative;
+          z-index: 1;
+          display: flex;
+          align-items: baseline;
+          min-width: 0;
+          gap: 8px;
+          margin: 8px 31px 0;
+          color: var(--text-secondary);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .tool-summary > span:first-child {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .tool-summary.err { color: var(--status-unavailable); }
+        .tool-summary-hint {
+          flex: 0 0 auto;
+          color: var(--text-muted);
+          font-size: 10px;
+        }
+        .tool-details {
+          position: relative;
+          z-index: 1;
+          display: grid;
+          gap: 9px;
+          margin-top: 10px;
+          padding-top: 9px;
+          border-top: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+          animation: yc-fade-up 160ms var(--ease-standard) both;
+        }
+        .tool-section { min-width: 0; }
+        .tool-section-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          min-height: 20px;
+          color: var(--text-secondary);
+          font-size: 11px;
+          font-weight: 600;
+        }
+        .tool-section-kind {
+          color: var(--text-muted);
+          font-size: 10px;
+          font-weight: 400;
+        }
+        .tool-copy {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 2px 5px;
+          border-radius: 5px;
+          color: var(--text-muted);
+          font-size: 10px;
+        }
+        .tool-copy:hover { color: var(--primary); background: var(--bg-element); }
         .tool-args,
         .tool-result {
-          margin: 6px 0 0;
+          margin: 5px 0 0;
           padding: 8px;
-          border-radius: 6px;
+          border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+          border-radius: 8px;
           font-size: 12px;
           line-height: 1.5;
-          background: var(--code-bg);
+          background: color-mix(in srgb, var(--code-bg) 76%, var(--tool-call-bg));
           max-height: 360px;
           overflow: auto;
           white-space: pre-wrap;
@@ -928,10 +1246,12 @@ function ToolCardView({ card }: { card: ToolCard }) {
           color: var(--status-unavailable);
         }
         .tool-tags {
+          position: relative;
+          z-index: 1;
           display: flex;
           flex-wrap: wrap;
           gap: 5px;
-          margin-top: 6px;
+          margin: 8px 31px 0;
         }
         .tool-tags span {
           padding: 2px 7px;
@@ -957,11 +1277,81 @@ function ToolCardView({ card }: { card: ToolCard }) {
         .search-result-snippet { color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
         .tool-code { color: var(--status-unavailable); }
         .tool-meta {
-          margin-top: 4px;
+          margin-top: 0;
           font-size: 11px;
           color: var(--text-muted);
         }
       `}</style>
     </div>
   );
+});
+
+const TOOL_LABELS: Record<string, string> = {
+  web_search: "搜索网页",
+  read_document: "读取文档",
+  bash: "运行命令",
+  run_command: "运行命令",
+  write_file: "写入文件",
+  edit_file: "修改文件",
+  browser: "操作浏览器",
+  computer: "操作电脑",
+  memory_search: "检索记忆",
+  subagent: "调用子 Agent",
+};
+
+function toolLabel(name: string): string {
+  return TOOL_LABELS[name] ?? name.replace(/[_-]+/g, " ");
+}
+
+function compactText(value: string, maxLength = 120): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function compactValue(value: unknown): string {
+  if (typeof value === "string") return compactText(value, 72);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return compactText(JSON.stringify(value), 72);
+  } catch {
+    return String(value);
+  }
+}
+
+function toolInputSummary(args: Record<string, unknown>): string {
+  return Object.entries(args)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .slice(0, 2)
+    .map(([key, value]) => `${key}: ${compactValue(value)}`)
+    .join(" · ");
+}
+
+function formatToolDuration(durationMs?: number): string | null {
+  if (durationMs === undefined || !Number.isFinite(durationMs)) return null;
+  if (durationMs < 1000) return `${Math.max(0, Math.round(durationMs))}ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(1)}s`;
+  return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1000)}s`;
+}
+
+function toolSummary(
+  card: ToolCard,
+  searchResults: SearchResultCard[] | null,
+  documentLabels: string[],
+): string {
+  if (card.status === "pending") return "等待确认后执行";
+  if (card.status === "running") {
+    const input = toolInputSummary(card.args);
+    return input ? `正在处理 · ${input}` : "正在处理";
+  }
+  if (card.status === "error" || card.isError) {
+    return card.code ? `执行失败 · ${card.code}` : "执行失败，点击查看错误详情";
+  }
+  if (searchResults) return `找到 ${searchResults.length} 条网页结果`;
+  if (documentLabels.length > 0) return documentLabels[0];
+  if (card.result !== undefined) {
+    const result = compactText(card.result);
+    return result || "已完成";
+  }
+  const input = toolInputSummary(card.args);
+  return input ? `已完成 · ${input}` : "已完成";
 }

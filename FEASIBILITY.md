@@ -1,7 +1,7 @@
 # 用积墨 API 复刻 YoomClaw 式 Agent —— 可行性结论与架构方案
 
 日期：2026-07-31
-方法：对积墨 API 做了 11 次真实探测调用（`probe-jimo.mjs` / `probe-react.mjs`），以下每条结论都有实测支撑，不是推测。
+方法：对积墨 API 做了 11 次真实探测调用（`web-automation/probes/probe-jimo.mjs` / `web-automation/probes/probe-react.mjs`），以下每条结论都有实测支撑，不是推测。
 
 ---
 
@@ -251,6 +251,4 @@ async *run(sessionId, userText) {
 
 ## 附：安全提醒
 
-`test-jimo.mjs` 第 2–3 行**硬编码了真实的 shareId 和 Authorization token**。项目目前还没有 git 仓库，一旦 `git init && git add .`，这个凭据就会永久写进提交历史（`.gitignore` 只挡了 `.env`，挡不住这个文件）。
-
-建议立刻改成从环境变量读取——新增的 `probe-jimo.mjs` / `probe-react.mjs` 已经采用 `process.env` 方式，可作参考。
+早期的 `test-jimo.mjs` 已从工作区删除；当前 `web-automation/probes/` 中的 API 探测脚本均从 `process.env` 读取凭据，仓库不再保留硬编码 token。
