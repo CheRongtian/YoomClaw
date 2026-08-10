@@ -16,7 +16,7 @@
     "build:computer-fixture": "node scripts/build-computer-fixture.mjs",
     "build:desktop-runtime": "node scripts/build-desktop-runtime.mjs",
     "build:desktop": "pnpm --filter @yoomclaw/desktop-renderer build && pnpm build:computer-helper && pnpm build:desktop-runtime && node scripts/prepare-desktop-app.mjs",
-    "package:dir": "pnpm build:desktop && node scripts/prepare-electron-unpacked.mjs && electron-builder --dir --prepackaged .tmp/electron-unpacked-win",
+    "package:dir": "pnpm build:desktop && node scripts/prepare-electron-unpacked.mjs mac && electron-builder --dir --mac --arm64 --prepackaged .tmp/electron-unpacked-mac/YoomClaw.app",
     "package:win": "pnpm build:desktop && node scripts/prepare-electron-unpacked.mjs win && electron-builder --win --x64 --prepackaged .tmp/electron-unpacked-win",
     "package:mac": "pnpm build:desktop && node scripts/prepare-electron-unpacked.mjs mac && electron-builder --mac --arm64 --prepackaged .tmp/electron-unpacked-mac/YoomClaw.app",
     "start": "pnpm --filter @yoomclaw/gateway start",

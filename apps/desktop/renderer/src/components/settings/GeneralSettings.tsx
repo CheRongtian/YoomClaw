@@ -79,7 +79,7 @@ export default function GeneralSettings() {
 
       <SettingRow
         label="开机时自动启动"
-        hint="登录 Windows 后自动运行 YoomClaw"
+        hint="登录 macOS 后自动运行 YoomClaw"
         control={
           <Toggle
             label="开机时自动启动"

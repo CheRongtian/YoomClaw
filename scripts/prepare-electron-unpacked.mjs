@@ -41,12 +41,13 @@ await fs.mkdir(helperDir, { recursive: true });
 for (const name of ["pdf_extract.py", "document_extract.py"]) {
   await fs.cp(path.join(root, "packages", "gateway", name), path.join(helperDir, name));
 }
-const computerHelperDir = path.join(root, "apps", "desktop", "runtime", "computer-control-win");
+const computerHelperName = isMac ? "computer-control-mac" : "computer-control-win";
+const computerHelperDir = path.join(root, "apps", "desktop", "runtime", computerHelperName);
 try {
-  await fs.cp(computerHelperDir, path.join(helperDir, "computer-control-win"), { recursive: true, force: true });
+  await fs.cp(computerHelperDir, path.join(helperDir, computerHelperName), { recursive: true, force: true });
 } catch (error) {
   if (error?.code !== "ENOENT") throw error;
-  console.warn("[YoomClaw] Windows computer helper is not present; packaging will keep the feature unavailable.");
+  console.warn(`[YoomClaw] ${isMac ? "macOS" : "Windows"} computer helper is not present; packaging will keep the feature unavailable.`);
 }
 
 await fs.writeFile(
@@ -68,6 +69,7 @@ if (isMac) {
   for (const [key, value] of replacements) {
     await execFileAsync("plutil", ["-replace", key, "-string", value, plist]);
   }
+  await execFileAsync("plutil", ["-replace", "NSPrincipalClass", "-string", "NSApplication", plist]);
   await fs.rename(path.join(output, "Contents", "MacOS", "Electron"), path.join(output, "Contents", "MacOS", "YoomClaw"));
 }
 

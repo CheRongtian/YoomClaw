@@ -3,10 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { WindowsComputerUseController } from "../packages/agent-core/dist/computer.js";
+import { NativeComputerUseController } from "../packages/agent-core/dist/computer.js";
 
-if (process.platform !== "win32") {
-  console.warn("[computer-control-smoke] skipped: Windows is required");
+if (process.platform !== "win32" && process.platform !== "darwin") {
+  console.warn("[computer-control-smoke] skipped: Windows or macOS is required");
   process.exit(0);
 }
 
@@ -15,8 +15,8 @@ const helperPath = path.join(
   "apps",
   "desktop",
   "runtime",
-  "computer-control-win",
-  "YoomClaw.ComputerControl.exe",
+  process.platform === "darwin" ? "computer-control-mac" : "computer-control-win",
+  process.platform === "darwin" ? "YoomClaw.ComputerControl" : "YoomClaw.ComputerControl.exe",
 );
 if (!fs.existsSync(helperPath)) {
   console.warn("[computer-control-smoke] skipped: published helper is not present");
@@ -24,7 +24,7 @@ if (!fs.existsSync(helperPath)) {
 }
 
 const dataDir = await mkdtemp(path.join(os.tmpdir(), "yoomclaw-computer-data-"));
-const controller = new WindowsComputerUseController(dataDir, { enabled: true, helperPath });
+const controller = new NativeComputerUseController(dataDir, { enabled: true, helperPath });
 
 try {
   const windows = await controller.listWindows();

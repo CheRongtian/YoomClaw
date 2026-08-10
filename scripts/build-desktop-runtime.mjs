@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = path.join(root, "apps", "desktop", "runtime");
-const helperDir = path.join(runtimeDir, "computer-control-win");
-const helperStaging = path.join(root, ".tmp", "computer-control-win-staging");
+const helperName = process.platform === "darwin" ? "computer-control-mac" : "computer-control-win";
+const helperDir = path.join(runtimeDir, helperName);
+const helperStaging = path.join(root, ".tmp", `${helperName}-staging`);
 
 await fs.rm(helperStaging, { recursive: true, force: true });
 try {

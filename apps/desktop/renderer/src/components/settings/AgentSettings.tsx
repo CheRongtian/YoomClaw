@@ -12,7 +12,7 @@ const TOOLSETS = [
   { id: "execution", label: "代码执行", term: "Execution", hint: "运行代码并读取执行结果。" },
   { id: "orchestration", label: "批量与子智能体", term: "Orchestration", hint: "并行执行任务或委派给子智能体。" },
   { id: "mcp", label: "外部工具", term: "MCP（可选）", hint: "发现并调用外部 MCP 工具。" },
-  { id: "computer", label: "电脑控制", term: "Computer Use（可选）", hint: "通过 Windows UI 自动化操作桌面应用。" },
+  { id: "computer", label: "电脑控制", term: "Computer Use（可选）", hint: "通过 macOS 辅助功能操作桌面应用。" },
 ] as const;
 
 type PromptTarget = "global" | "project" | "user";
@@ -39,10 +39,12 @@ interface SkillSummary {
 }
 
 function computerHint(computer: HermesConfig["computer"]): string {
-  if (computer?.platform && computer.platform !== "win32") return "电脑控制仅支持 Windows。";
+  if (computer?.platform && computer.platform !== "darwin") return "这个分支的电脑控制仅支持 macOS。";
   const message = computer?.message?.toLowerCase() ?? "";
   if (message.includes("disabled")) return "电脑控制已关闭。";
   if (message.includes("helper")) return "辅助程序 Helper 未构建。";
+  if (message.includes("accessibility")) return "请在系统设置中授予辅助功能权限。";
+  if (message.includes("screen recording")) return "窗口截图需要屏幕录制权限。";
   return "电脑控制当前不可用。";
 }
 
@@ -57,7 +59,7 @@ const EMPTY_CONFIG: HermesConfig = {
   browserCdpUrl: "http://127.0.0.1:9222",
   computerEnabled: false,
   browser: { connected: false },
-  computer: { enabled: false, available: false, platform: "win32" },
+  computer: { enabled: false, available: false, platform: "darwin" },
   prompts: { global: "", project: "", user: "" },
 };
 
@@ -359,7 +361,7 @@ export default function AgentSettings() {
         <div className="browser-actions"><input data-testid="browser-cdp-url" value={config.browserCdpUrl ?? ""} onChange={(event) => setConfig((current) => ({ ...current, browserCdpUrl: event.target.value }))} onBlur={() => void patchConfig({ browserCdpUrl: config.browserCdpUrl })} /><button type="button" className="small-button" data-testid="browser-connect" onClick={() => void (config.browser?.connected ? disconnectBrowser() : connectBrowser())}>{config.browser?.connected ? "断开" : "连接"}</button></div>
       </div>
       <div className="browser-card">
-        <div><div className="agent-label">Windows UI 自动化</div><div className="agent-hint">{config.computer?.available ? `辅助程序 Helper ${config.computer.helperVersion ?? "ready"}` : computerHint(config.computer)}</div></div>
+        <div><div className="agent-label">macOS 辅助功能控制</div><div className="agent-hint">{config.computer?.available ? `辅助程序 Helper ${config.computer.helperVersion ?? "ready"}；首次使用请授予辅助功能和屏幕录制权限。` : computerHint(config.computer)}</div></div>
         <div className="browser-actions"><span className={"status-pill " + (config.computer?.available ? "ok" : "warn")}>{config.computer?.available ? "可用" : "不可用"}</span><Toggle testId="computer-enabled" label="电脑控制 Computer Use" checked={!!config.computerEnabled} onChange={(value) => void patchConfig({ computerEnabled: value })} /></div>
       </div>
       {status && <div className="agent-status">{status}</div>}

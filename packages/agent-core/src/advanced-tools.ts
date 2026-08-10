@@ -842,12 +842,12 @@ const nativeComputerUse: BuiltinTool = {
   risk: "confirm",
   definition: {
     name: "computer_use",
-    description: "Control a Windows desktop window through UI Automation; browser pages use the browser tools instead.",
+    description: "Control a native desktop window through Windows UI Automation or macOS Accessibility; browser pages use the browser tools instead.",
     parameters: {
       type: "object",
       properties: {
         action: { type: "string", enum: ["list_windows", "inspect", "screenshot", "focus", "click", "type", "press_key", "scroll", "read"] },
-        hwnd: { type: "number", description: "Target Windows window handle (HWND)." },
+        hwnd: { type: "number", description: "Target native window identifier returned by list_windows." },
         element: {
           type: "object",
           properties: {
@@ -868,12 +868,12 @@ const nativeComputerUse: BuiltinTool = {
   assess(args) {
     const action = String(args.action ?? "");
     return ["click", "type", "press_key"].includes(action)
-      ? `Windows desktop ${action} requires confirmation for the selected window.`
+      ? `Native desktop ${action} requires confirmation for the selected window.`
       : null;
   },
   async run(args, ctx) {
     const computer = ctx.computer;
-    if (!computer) return fail("Windows computer control is unavailable", "COMPUTER_UNAVAILABLE");
+    if (!computer) return fail("Native computer control is unavailable", "COMPUTER_UNAVAILABLE");
     const action = stringArg(args, "action");
     const hwnd = computerHwnd(args);
     try {
@@ -921,7 +921,7 @@ const nativeComputerUse: BuiltinTool = {
         default: return fail("Unsupported computer_use action", "COMPUTER_ACTION_INVALID");
       }
     } catch (error) {
-      return fail(`Windows computer action failed: ${error instanceof Error ? error.message : String(error)}`, computerErrorCode(error));
+      return fail(`Native computer action failed: ${error instanceof Error ? error.message : String(error)}`, computerErrorCode(error));
     }
   },
 };

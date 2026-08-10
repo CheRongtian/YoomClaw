@@ -30,18 +30,21 @@ pnpm --filter @yoomclaw/agent-core build
 node web-automation/browser-control-smoke.mjs
 ```
 
-## Windows computer-control smoke test
+## Native computer-control smoke test
 
-After publishing the Windows helper, `computer-control-smoke.mjs` starts the
+After building the platform helper, `computer-control-smoke.mjs` starts the
 actual helper and exercises only `ping` and `list_windows`. It never focuses,
 clicks, types into, or screenshots a user window.
 
-```powershell
+On macOS, grant Accessibility permission before running this optional smoke
+test. The normal unit suite uses a protocol fixture and needs no system access.
+
+```bash
 pnpm --filter @yoomclaw/agent-core build
 node web-automation/computer-control-smoke.mjs
 ```
 
-For the isolated UIA action test, build the disposable WinForms fixture and
+For the Windows-only isolated UIA action test, build the disposable WinForms fixture and
 run its smoke test. The fixture is the only window the test focuses or edits.
 
 ```powershell

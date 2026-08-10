@@ -12,14 +12,20 @@ import { chromium } from "../packages/agent-core/node_modules/playwright-core/in
 const execFileAsync = promisify(execFile);
 
 const chromeCandidates = [
+  process.env.CHROME_PATH ?? "",
+  ...(process.platform === "darwin" ? [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    path.join(os.homedir(), "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome"),
+  ] : []),
   process.env.PROGRAMFILES ? path.join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe") : "",
   process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe") : "",
   process.env.PROGRAMFILES ? path.join(process.env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe") : "",
 ].filter(Boolean);
 const chromePath = chromeCandidates.find((candidate) => existsSync(candidate));
 
-if (process.platform !== "win32" || !chromePath) {
-  console.warn("[browser-control-smoke] skipped: Windows Chrome/Edge executable not found");
+if ((process.platform !== "win32" && process.platform !== "darwin") || !chromePath) {
+  console.warn("[browser-control-smoke] skipped: Chrome/Edge executable not found");
   process.exit(0);
 }
 

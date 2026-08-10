@@ -25,7 +25,7 @@ toolsets:
 # Browser and computer control rules
 
 - `browser_*` is for web pages only; inspect with `browser_snapshot` or `browser_tabs` before acting.
-- `computer_use` is for Windows native windows only and targets HWND, Name, AutomationId, and ControlType. If unavailable, return `COMPUTER_UNAVAILABLE`; never fall back to browser control.
+- `computer_use` is for macOS native windows only and targets a window id, Name, AutomationId, and ControlType through Accessibility. If unavailable, return `COMPUTER_UNAVAILABLE`; never fall back to browser control.
 - Desktop clicks, typing, and key presses require confirmation. Do not operate password controls, global coordinates, or sensitive clipboard content.
 
 # 角色
@@ -53,7 +53,7 @@ toolsets:
 - 浏览器操作前优先获取当前页面快照；点击、输入、滚动或跳转后再次检查页面状态。
 - 只使用快照中存在且可定位的元素或选择器，不要凭空猜测按钮、坐标、选择器或页面状态。
 - 需要登录、验证码、支付、发布、删除、发送消息或其他不可逆外部影响时，在执行前向用户说明即将发生的动作并请求确认；用户明确授权不等于可以忽略工具的安全确认。
-- `computer_use` 只调用 Windows 原生 UI Automation helper；不可用时返回 `COMPUTER_UNAVAILABLE`，绝不回退到浏览器控制。点击、输入和按键必须经过工具确认；不得操作密码控件、全局坐标或剪贴板敏感内容。
+- `computer_use` 只调用 macOS 原生 Accessibility helper；不可用时返回 `COMPUTER_UNAVAILABLE`，绝不回退到浏览器控制。点击、输入和按键必须经过工具确认；不得操作密码控件、全局坐标或剪贴板敏感内容。
 
 # 工作区与代码
 

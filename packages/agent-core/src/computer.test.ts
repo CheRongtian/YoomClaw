@@ -3,11 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { WindowsComputerUseController } from "./computer.js";
+import { NativeComputerUseController } from "./computer.js";
 
-test("Windows computer controller speaks JSONL and redacts helper-side text handling", async (t) => {
-  if (process.platform !== "win32") {
-    t.skip("Windows helper protocol test only runs on Windows");
+test("native computer controller speaks JSONL and redacts helper-side text handling", async (t) => {
+  if (process.platform !== "win32" && process.platform !== "darwin") {
+    t.skip("native helper protocol test only runs on Windows or macOS");
     return;
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-computer-test-"));
@@ -27,7 +27,7 @@ test("Windows computer controller speaks JSONL and redacts helper-side text hand
     }
   `, "utf8");
 
-  const controller = new WindowsComputerUseController(path.join(root, "data"), {
+  const controller = new NativeComputerUseController(path.join(root, "data"), {
     enabled: true,
     helperPath: helper,
   });
@@ -45,8 +45,8 @@ test("Windows computer controller speaks JSONL and redacts helper-side text hand
   }
 });
 
-test("disabled Windows computer controller fails closed", async () => {
-  const controller = new WindowsComputerUseController(path.join(os.tmpdir(), "yoomclaw-computer-disabled"), { enabled: false });
+test("disabled native computer controller fails closed", async () => {
+  const controller = new NativeComputerUseController(path.join(os.tmpdir(), "yoomclaw-computer-disabled"), { enabled: false });
   await assert.rejects(
     () => controller.listWindows(),
     (error) => error && typeof error === "object" && (error as { code?: unknown }).code === "COMPUTER_DISABLED",

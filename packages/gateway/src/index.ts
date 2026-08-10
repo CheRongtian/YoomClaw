@@ -38,7 +38,7 @@ import {
   MemoryStore,
   SkillStore,
   ChromeCdpController,
-  WindowsComputerUseController,
+  NativeComputerUseController,
   loadRuntimeConfig,
   resolveInWorkspace,
   type BuiltinTool,
@@ -142,7 +142,7 @@ export class Gateway {
   private memoryStore: MemoryStore;
   private skillStore: SkillStore;
   private browser: ChromeCdpController;
-  private computer: WindowsComputerUseController;
+  private computer: NativeComputerUseController;
   private imageHost?: ImageHostClient;
   private pdfReader: LocalPdfReader;
   private attachments: AttachmentStore;
@@ -258,7 +258,7 @@ export class Gateway {
     this.memoryStore = new MemoryStore(this.runtime.workspace, this.runtime.dataDir);
     this.skillStore = new SkillStore(this.runtime.workspace, this.runtime.dataDir);
     this.browser = new ChromeCdpController(this.runtime.dataDir, this.runtime.browserCdpUrl);
-    this.computer = new WindowsComputerUseController(this.runtime.dataDir, {
+    this.computer = new NativeComputerUseController(this.runtime.dataDir, {
       enabled: this.runtime.computerEnabled,
     });
     this.sessions = new SessionStore(

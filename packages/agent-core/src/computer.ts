@@ -11,7 +11,8 @@ import type {
   ComputerWindow,
 } from "./tools.js";
 
-const HELPER_NAME = "YoomClaw.ComputerControl.exe";
+const WINDOWS_HELPER_NAME = "YoomClaw.ComputerControl.exe";
+const MAC_HELPER_NAME = "YoomClaw.ComputerControl";
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export class ComputerControlError extends Error {
@@ -43,29 +44,35 @@ interface PendingRequest {
 }
 
 export function resolveComputerHelperPath(explicit?: string): string | undefined {
-  if (process.platform !== "win32") return undefined;
+  if (process.platform !== "win32" && process.platform !== "darwin") return undefined;
+  const helperName = process.platform === "darwin" ? MAC_HELPER_NAME : WINDOWS_HELPER_NAME;
+  const helperFolder = process.platform === "darwin" ? "computer-control-mac" : "computer-control-win";
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   const candidates = [
     explicit,
     process.env.YOOMCLAW_COMPUTER_HELPER,
-    process.env.YOOMCLAW_HELPER_DIR ? path.join(process.env.YOOMCLAW_HELPER_DIR, HELPER_NAME) : undefined,
-    resourcesPath ? path.join(resourcesPath, "runtime-helpers", "computer-control-win", HELPER_NAME) : undefined,
-    resourcesPath ? path.join(resourcesPath, "app", "runtime", "computer-control-win", HELPER_NAME) : undefined,
-    path.join(process.cwd(), "apps", "desktop", "runtime", "computer-control-win", HELPER_NAME),
-    path.join(process.cwd(), "packages", "computer-control-win", "bin", "Release", "net8.0-windows10.0.17763.0", "win-x64", "publish", HELPER_NAME),
-    path.join(process.cwd(), "packages", "computer-control-win", "bin", "Release", "net8.0-windows", "win-x64", "publish", HELPER_NAME),
+    process.env.YOOMCLAW_HELPER_DIR ? path.join(process.env.YOOMCLAW_HELPER_DIR, helperFolder, helperName) : undefined,
+    resourcesPath ? path.join(resourcesPath, "runtime-helpers", helperFolder, helperName) : undefined,
+    resourcesPath ? path.join(resourcesPath, "app", "runtime", helperFolder, helperName) : undefined,
+    path.join(process.cwd(), "apps", "desktop", "runtime", helperFolder, helperName),
+    ...(process.platform === "win32" ? [
+      path.join(process.cwd(), "packages", "computer-control-win", "bin", "Release", "net8.0-windows10.0.17763.0", "win-x64", "publish", helperName),
+      path.join(process.cwd(), "packages", "computer-control-win", "bin", "Release", "net8.0-windows", "win-x64", "publish", helperName),
+    ] : []),
   ].filter((value): value is string => Boolean(value?.trim()));
 
   for (const candidate of candidates) {
     const normalized = /\.(?:exe|mjs|cjs|js|cmd)$/i.test(candidate)
       ? candidate
-      : path.join(candidate, HELPER_NAME);
+      : fs.existsSync(candidate) && fs.statSync(candidate).isFile()
+        ? candidate
+        : path.join(candidate, helperName);
     if (fs.existsSync(normalized)) return normalized;
   }
   return undefined;
 }
 
-export class WindowsComputerUseController implements ComputerUseController {
+export class NativeComputerUseController implements ComputerUseController {
   private enabled: boolean;
   private readonly helperPath?: string;
   private readonly auditPath: string;
@@ -86,14 +93,14 @@ export class WindowsComputerUseController implements ComputerUseController {
   }
 
   status(): ComputerStatus {
-    if (process.platform !== "win32") {
-      return { enabled: this.enabled, available: false, platform: process.platform, message: "Windows computer control is only supported on Windows." };
+    if (process.platform !== "win32" && process.platform !== "darwin") {
+      return { enabled: this.enabled, available: false, platform: process.platform, message: "Native computer control is supported on Windows and macOS." };
     }
     if (!this.enabled) {
-      return { enabled: false, available: false, platform: process.platform, message: "Windows computer control is disabled." };
+      return { enabled: false, available: false, platform: process.platform, message: "Native computer control is disabled." };
     }
     if (!this.helperPath) {
-      return { enabled: true, available: false, platform: process.platform, message: "Windows computer control helper is not built." };
+      return { enabled: true, available: false, platform: process.platform, message: "Native computer control helper is not built." };
     }
     return {
       enabled: true,
@@ -218,9 +225,9 @@ export class WindowsComputerUseController implements ComputerUseController {
   }
 
   private async ensureStarted(): Promise<void> {
-    if (!this.enabled) throw new ComputerControlError("Windows computer control is disabled", "COMPUTER_DISABLED");
-    if (process.platform !== "win32") throw new ComputerControlError("Windows computer control is only supported on Windows", "COMPUTER_UNSUPPORTED_PLATFORM");
-    if (!this.helperPath) throw new ComputerControlError("Windows computer control helper is not built", "COMPUTER_UNAVAILABLE");
+    if (!this.enabled) throw new ComputerControlError("Native computer control is disabled", "COMPUTER_DISABLED");
+    if (process.platform !== "win32" && process.platform !== "darwin") throw new ComputerControlError("Native computer control is unsupported on this platform", "COMPUTER_UNSUPPORTED_PLATFORM");
+    if (!this.helperPath) throw new ComputerControlError("Native computer control helper is not built", "COMPUTER_UNAVAILABLE");
     if (this.child && !this.child.killed) return;
     if (this.startPromise) return this.startPromise;
 
@@ -319,6 +326,9 @@ export class WindowsComputerUseController implements ComputerUseController {
     }
     const code = response.error?.code || "COMPUTER_HELPER_ERROR";
     const message = response.error?.message || "Computer helper request failed.";
+    if (code === "ACCESSIBILITY_PERMISSION_REQUIRED" || code === "SCREEN_RECORDING_PERMISSION_REQUIRED") {
+      this.lastError = message;
+    }
     pending.reject(new ComputerControlError(message, code));
   }
 
@@ -328,7 +338,7 @@ export class WindowsComputerUseController implements ComputerUseController {
   }
 
   private requireTarget(value: ComputerElementTarget): ComputerElementTarget {
-    if (!value || typeof value !== "object") throw new ComputerControlError("A UI Automation element selector is required", "ELEMENT_REQUIRED");
+    if (!value || typeof value !== "object") throw new ComputerControlError("A native accessibility element selector is required", "ELEMENT_REQUIRED");
     if (!value.name && !value.automationId && !value.controlType) {
       throw new ComputerControlError("Element selector needs name, automationId, or controlType", "ELEMENT_SELECTOR_REQUIRED");
     }
@@ -338,3 +348,6 @@ export class WindowsComputerUseController implements ComputerUseController {
     return value;
   }
 }
+
+/** Backward-compatible export for integrations written against the Windows-only controller name. */
+export const WindowsComputerUseController = NativeComputerUseController;

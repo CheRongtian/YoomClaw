@@ -1126,7 +1126,7 @@ export {
 } from "./config.js";
 export { HermesPromptAssembler, type PromptContext, textFromMessage } from "./prompt.js";
 export { ChromeCdpController } from "./browser.js";
-export { WindowsComputerUseController, resolveComputerHelperPath, type ComputerControllerOptions } from "./computer.js";
+export { NativeComputerUseController, WindowsComputerUseController, resolveComputerHelperPath, type ComputerControllerOptions } from "./computer.js";
 export type {
   ToolServices,
   ToolServiceContext,
