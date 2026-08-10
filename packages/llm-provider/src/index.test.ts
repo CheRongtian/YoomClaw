@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { JimoProvider, JimoVisionProvider } from "./index.js";
+import { JimoProvider } from "./index.js";
 
 function sseResponse(chunks: string[]): Response {
   let index = 0;
@@ -99,39 +99,6 @@ test("Jimo chat folds trusted prompt text parts before a file attachment", async
   }
 });
 
-test("vision provider uses its own Jimo share and session namespace", async () => {
-  const originalFetch = globalThis.fetch;
-  let requestedUrl = "";
-  let requestBody = "";
-  globalThis.fetch = (async (input, init) => {
-    requestedUrl = String(input);
-    requestBody = String(init?.body ?? "");
-    return sseResponse(["event: data\ndata: {\"role\":\"assistant\",\"content\":\"OCR\"}\n\nevent: end\ndata: {}\n\n"]);
-  }) as typeof fetch;
-  try {
-    const provider = new JimoVisionProvider({
-      baseUrl: "https://vision.example.test",
-      shareId: "vision-share",
-      authorization: "vision-token",
-    });
-    const result = await provider.analyze({
-      role: "user",
-      content: [{ type: "image_url", image_url: { url: "https://image.test/a.png" } }],
-    }, "session-2");
-    assert.equal(result, "OCR");
-    assert.match(requestedUrl, /shareId=vision-share/);
-    assert.equal((JSON.parse(requestBody) as { sessionId: string }).sessionId, "vision-session-2");
-    const request = JSON.parse(requestBody) as {
-      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
-    };
-    const promptText = request.messages[0].content[0].text ?? "";
-    assert.match(promptText, /结构化 JSON 输出协议/);
-    assert.equal(promptText.includes("?"), false);
-    assert.equal(request.messages[0].content[1].type, "image_url");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
 
 test("Jimo file uploads preserve filename, kind and size metadata", async () => {
   const originalFetch = globalThis.fetch;

@@ -78,6 +78,7 @@ YoomClaw/
 ├── apps/
 │   ├── cli/              # `claw` CLI entry
 │   └── desktop/          # Electron app (main process + Vite/React renderer)
+├── web-automation/       # Opt-in Chrome/Jimo history automation and probes
 ├── skills/               # Skill directory (extensible)
 ├── package.json
 ├── pnpm-workspace.yaml
@@ -124,7 +125,9 @@ Implement the `LLMProvider` interface in `@yoomclaw/llm-provider` and register i
 
 ## Hermes Mode
 
-当前默认运行模式是 `Hermes Mode`：它保留现有积墨 AI 主 API 和 Jimo SSE 请求格式，在本地增加了可选工作区、文件优先会话、全局/项目提示词、长期记忆、Skills 草稿、编程工具、Chrome CDP 浏览器工具和独立识图机器人。
+当前默认运行模式是 `Hermes Mode`：它保留现有积墨 AI 主 API 和 Jimo SSE 请求格式，在本地增加了可选工作区、文件优先会话、全局/项目提示词、长期记忆、Skills 草稿、编程工具、Chrome CDP 浏览器工具和主 Agent 的多模态输入。
+
+唯一主 Agent 的配置与可复制到平台“主题”的静态提示词见 [`agents/main.md`](./agents/main.md)。
 
 桌面端打开“设置 → Agent”即可：
 
@@ -135,13 +138,13 @@ Implement the `LLMProvider` interface in `@yoomclaw/llm-provider` and register i
 
 运行数据默认保存到 Electron 的 `<userData>/YoomClaw/`，包括 `prompts/`、`memories/`、`skills/`、`sessions/`、`browser/` 和 `logs/`。旧工作区中的 `.claw-data/sessions.json` 会被复制迁移为单会话文件，原文件不会删除。
 
-积墨 API 不支持原生 `system` / `tools` / 客户端完整 history，因此 Hermes 首轮会把规则、记忆、项目提示词和工具说明拼进 user 内容；后续轮次只发送工具结果，并始终使用同一个 provider session id。视觉机器人必须使用独立的 `JIMO_VISION_*` shareId 和 token；未配置时普通文字聊天仍可用。
+积墨 API 不支持原生 `system` / `tools` / 客户端完整 history，因此 Hermes 首轮会把规则、记忆、项目提示词和工具说明拼进 user 内容；后续轮次只发送工具结果，并始终使用同一个 provider session id。当前只有一个主 Agent（默认模型标识为 `gpt-5.6-luna`）；图片仍必须先上传到图床，转换为 HTTPS URL 后随原始多模态消息交给主 Agent。
 
 访问权限有三档：`请求批准`（编辑外部文件和使用互联网时始终询问）、`替我审批`（仅对检测到的风险操作请求批准）和 `完全访问权限`。完全访问会取消应用层的工作区、敏感路径和命令拦截，但仍使用当前 Windows 用户权限，不会自动提权。
 
-当前可按 Toolset 开关的扩展工具包括：`update_plan`、`vision_analyze`、`apply_patch`、`read_document`、`web_fetch` / `web_search`、`execute_code`、`parallel`、`delegate_task`、`tool_search` / MCP 调用和浏览器级 `computer_use`。默认开启计划、文档、网页、代码和编排能力；MCP 与 Computer Use 默认关闭。MCP 当前通过 `YOOMCLAW_MCP_URL` 提供 HTTP JSON-RPC 连接，搜索通过 `YOOMCLAW_SEARCH_URL` 配置。
+当前可按 Toolset 开关的扩展工具包括：`update_plan`、`apply_patch`、`read_document`、`web_fetch` / `web_search`、`execute_code`、`parallel`、`delegate_task`、`tool_search` / MCP 调用、浏览器工具和 Windows `computer_use`。默认开启计划、文档、网页、代码和编排能力；MCP 与 Computer Use 默认关闭。MCP 当前通过 `YOOMCLAW_MCP_URL` 提供 HTTP JSON-RPC 连接，搜索通过 `YOOMCLAW_SEARCH_URL` 配置。
 
-Office 文档使用本地无第三方依赖的解析 helper；旧版二进制 `.doc` / `.xls` 可能需要先转换为 `.docx` / `.xlsx`。`computer_use` 目前复用 Chrome CDP，Windows 原生桌面自动化仍需单独接入。
+Office 文档使用本地无第三方依赖的解析 helper；旧版二进制 `.doc` / `.xls` 可能需要先转换为 `.docx` / `.xlsx`。浏览器控制使用 Chrome CDP；`computer_use` 使用独立的 Windows UI Automation helper，默认关闭且不可回退到浏览器。
 
 验证命令：
 
@@ -158,8 +161,18 @@ pnpm test
 pnpm test:e2e:ui -- --live
 pnpm test:e2e:ui -- --live --full-live
 pnpm test:e2e:chrome-history -- --start-chrome --wait-for-login --live-report <summary.json>
-pnpm test:e2e:history -- --live-report <summary.json> --rpa-script "<path-to-collect-jimo-history-rpa.mjs>"
+pnpm test:e2e:history -- --live-report <summary.json> --rpa-script "web-automation/collect-jimo-history-rpa.mjs"
 ```
+
+## Browser and Windows computer control
+
+Browser tools now use Chrome CDP with tab selection, semantic targets, strict
+single-element matching, accessibility snapshots, and sensitive-input blocking.
+The separate `computer_use` tool uses a Windows UI Automation helper when
+`YOOMCLAW_COMPUTER_ENABLED=true` and the helper is built. It never falls back to
+browser control, arbitrary shell commands, global coordinate clicks, password
+fields, or clipboard reads. Computer control is Windows-only and disabled by
+default.
 
 ## License
 

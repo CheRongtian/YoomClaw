@@ -288,7 +288,7 @@ async function main() {
         YOOMCLAW_AGENT_MODE: "hermes",
         YOOMCLAW_PROMPT_MODE: "provider",
         YOOMCLAW_AUTO_MEMORY_REVIEW: "false",
-        YOOMCLAW_TOOLSETS: "vision",
+        YOOMCLAW_TOOLSETS: "coding,browser",
         YOOMCLAW_WORKSPACE: inputRoot,
         YOOMCLAW_E2E_EXPORT_DIR: path.join(runDir, "exports"),
         YOOMCLAW_E2E_LOG_DIR: path.join(runDir, "logs"),

@@ -6,14 +6,14 @@
  * 因此工具协议只能靠 user 消息正文里的规则来约定，并自行解析模型输出。
  */
 
-import type { SafetyMode, ToolDefinition } from "@yoomclaw/protocol";
+import type { ChatMessage, SafetyMode, ToolDefinition } from "@yoomclaw/protocol";
 
 /** 工具规则前缀，用于识别一条消息是否为注入过规则的首轮。 */
 export const RULE_MARKER = "## 你的工具能力";
 
 /** Describe the active permission policy so the model does not fall back to the default workspace-only assumption. */
 export function buildSafetyPrompt(mode: SafetyMode = "workspace-auto"): string {
-  const fileOperationRule = "当用户要求创建、修改或生成文件（尤其是要求在指定目录制作小游戏）时，必须实际调用 write_file、edit_file 或其他合适的文件工具完成写入；不要把完整源码直接作为最终回复。用户提供的本地目录路径应作为目标目录，路径包含空格或中文时也必须完整放入工具参数。";
+  const fileOperationRule = "当用户要求创建、修改或生成文件（尤其是要求在指定目录制作小游戏）时，必须实际调用 write_file、edit_file 或其他合适的文件工具完成写入；当用户明确要求删除随消息附加的本地文件时，必须实际调用 delete_file，并把附加的完整本地路径放入 path 参数。不要把完整源码直接作为最终回复，也不要把操作过程当成最终结果。用户提供的本地目录路径应作为目标目录，路径包含空格或中文时也必须完整放入工具参数。";
   const context = (label: string, details: string) => `## 运行时权限上下文（由客户端注入）
 
 当前权限模式：${mode}
@@ -74,6 +74,8 @@ ${list}
 
 5. 不需要用工具就能回答的问题（闲聊、常识、解释概念），直接正常回答即可。
 
+6. 不要输出思考过程、草稿或“需要工具/JSON 但还没调用”的自言自语。需要工具时直接输出第 1 条规定的 JSON。
+
 ## 用户任务
 
 `;
@@ -92,6 +94,46 @@ export function buildToolResultPrompt(
 export interface ParsedToolCall {
   tool: string;
   args: Record<string, unknown>;
+}
+
+/**
+ * Handle the unambiguous file-delete action before relying on model formatting.
+ * The normal permission/confirmation path still runs after this inference.
+ */
+export function inferExplicitLocalFileCall(message: ChatMessage): ParsedToolCall | null {
+  if (message.role !== "user") return null;
+  const paths = (message.localPaths ?? []).map((value) => value.trim()).filter(Boolean);
+  if (paths.length !== 1) return null;
+
+  const text = typeof message.content === "string"
+    ? message.content
+    : message.content
+      .filter((part) => part.type === "text")
+      .map((part) => part.type === "text" ? part.text : "")
+      .join("\n");
+  const normalized = text.trim().toLocaleLowerCase();
+  if (!/(删除|删掉|移除|清理|delete|remove|trash|recycle)/i.test(normalized)) return null;
+  const asksForInstructions = /(如何|怎么|怎样|教程|方法|how\s+to|what\s+is)/i.test(normalized);
+  const explicitAction = /(帮我|请|我要|请把|please|delete|remove|trash|recycle)/i.test(normalized);
+  if (asksForInstructions && !explicitAction) return null;
+  if (/(不要|别|不删|勿删|保留|don't\s+delete|do\s+not\s+delete)/i.test(normalized)) return null;
+
+  return { tool: "delete_file", args: { path: paths[0] } };
+}
+
+/** Detect a model's internal tool-protocol draft so it is never shown as a final answer. */
+export function looksLikeToolProtocolLeak(text: string): boolean {
+  const normalized = text.trim().toLocaleLowerCase();
+  if (!normalized) return false;
+  const markers = [
+    /response\s+must\s+be\s+json/,
+    /only\s+(?:one|a single)\s+line\s+json/,
+    /(?:need|now).{0,24}\btool\b/,
+    /mistakenly\s+final/,
+    /rules?\s+say/,
+    /(?:工具调用|必须.*json|只能.*json)/i,
+  ];
+  return markers.filter((marker) => marker.test(normalized)).length >= 2;
 }
 
 /**

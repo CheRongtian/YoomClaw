@@ -299,7 +299,7 @@ async function startGateway(options: CliOptions): Promise<GatewayHandle> {
       YOOMCLAW_AGENT_MODE: "hermes",
       YOOMCLAW_PROMPT_MODE: "provider",
       YOOMCLAW_AUTO_MEMORY_REVIEW: "false",
-      YOOMCLAW_TOOLSETS: "vision",
+      YOOMCLAW_TOOLSETS: "coding,browser",
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,

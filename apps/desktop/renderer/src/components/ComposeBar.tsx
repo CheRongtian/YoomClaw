@@ -11,6 +11,7 @@ import {
 import {
   classifyFileInput,
   extractLocalFilePathCandidates,
+  FILE_INPUT_ACCEPT,
   MAX_FILES_PER_MESSAGE,
   MAX_IMAGES_PER_MESSAGE,
 } from "@yoomclaw/protocol";
@@ -145,10 +146,15 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
   useEffect(() => {
     const saved = draftKey ? localStorage.getItem(`yoomclaw:draft:${draftKey}`) : null;
     const previousDraftKey = previousDraftKeyRef.current;
+    const currentDraftKey = draftKey ?? null;
+    const draftChanged = previousDraftKey !== currentDraftKey;
     const carryingPendingCompose = previousDraftKey === null && Boolean(draftKey) && saved === null;
-    if (!carryingPendingCompose) setText(saved ?? "");
-    if (!carryingPendingCompose) setAttachments([]);
-    previousDraftKeyRef.current = draftKey ?? null;
+    // A new session can be created as part of submitting the current draft.
+    // Do not clear the text when only `creating` changes, or while carrying
+    // that draft from the empty state into the newly-created session.
+    if (draftChanged && !carryingPendingCompose) setText(saved ?? "");
+    if (draftChanged && !carryingPendingCompose) setAttachments([]);
+    previousDraftKeyRef.current = currentDraftKey;
     focusPendingRef.current = Boolean(draftKey) || creating;
     if ((!draftKey && !creating) || disabled) return;
     const frame = window.requestAnimationFrame(focusTextarea);
@@ -208,7 +214,8 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
       const accepted = await onSend(trimmed, attachmentsAtSubmit);
       if (!accepted) return;
       if (
-        draftKeyRef.current === draftKeyAtSubmit &&
+        (draftKeyRef.current === draftKeyAtSubmit ||
+          (draftKeyAtSubmit === null && draftKeyRef.current !== null)) &&
         textRef.current === textAtSubmit &&
         attachmentsRef.current === attachmentsAtSubmit
       ) {
@@ -458,6 +465,7 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
             ref={fileInputRef}
             type="file"
             multiple
+            accept={FILE_INPUT_ACCEPT}
             hidden
             onChange={handleFileChange}
           />

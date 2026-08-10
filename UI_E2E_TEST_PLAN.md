@@ -33,7 +33,7 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir=<isolated-test-profile>
 然后运行 UI-only RPA：
 
 ```powershell
-node "<path-to-collect-jimo-history-rpa.mjs>" `
+node "web-automation/collect-jimo-history-rpa.mjs" `
   --cdp http://127.0.0.1:9222 `
   --url https://jimoai.xiaohuodui.cn/robot `
   --output .tmp/yoomclaw-e2e/jimo-history-rpa.json `
@@ -46,7 +46,7 @@ node "<path-to-collect-jimo-history-rpa.mjs>" `
 ```powershell
 pnpm test:e2e:history -- `
   --live-report .tmp/yoomclaw-e2e/<run-dir>/summary.json `
-  --rpa-script "<path-to-collect-jimo-history-rpa.mjs>" `
+  --rpa-script "web-automation/collect-jimo-history-rpa.mjs" `
   --cdp http://127.0.0.1:9222 `
   --max-records 50
 ```
@@ -57,7 +57,7 @@ pnpm test:e2e:history -- `
 pnpm test:e2e:chrome-history -- --start-chrome --wait-for-login `
   --cdp http://127.0.0.1:9222 `
   --url https://jimoai.xiaohuodui.cn/robot `
-  --rpa-script "<path-to-collect-jimo-history-rpa.mjs>" `
+  --rpa-script "web-automation/collect-jimo-history-rpa.mjs" `
   --live-report .tmp/yoomclaw-e2e/<run-dir>/summary.json `
   --output .tmp/yoomclaw-e2e/jimo-history-rpa.json `
   --max-records 50

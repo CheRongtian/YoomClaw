@@ -1,6 +1,11 @@
 @echo off
+setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
+
+REM Keep Electron downloads on the configured mirror. pnpm does not always
+REM forward custom npmrc keys to Electron's postinstall script.
+set "ELECTRON_MIRROR=https://registry.npmmirror.com/-/binary/electron/"
 
 echo ========================================
 echo   YoomClaw Launcher
@@ -26,7 +31,7 @@ REM version manager / PowerShell profile). Delegate to PowerShell,
 REM which loads that profile and has pnpm available.
 echo [INFO] pnpm not found in cmd PATH. Delegating to PowerShell...
 echo.
-powershell -NoExit -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; Set-Location -LiteralPath '%CD%'; pnpm install --frozen-lockfile --prod=false --config.confirmModulesPurge=false; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (-not (Test-Path -LiteralPath 'node_modules\.bin\concurrently.cmd')) { Write-Error 'concurrently was not installed'; exit 1 }; pnpm dev"
+powershell -NoExit -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; Set-Location -LiteralPath '%CD%'; $env:ELECTRON_MIRROR='https://registry.npmmirror.com/-/binary/electron/'; pnpm install --frozen-lockfile --prod=false --config.confirmModulesPurge=false; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (-not (Test-Path -LiteralPath 'node_modules\.bin\concurrently.cmd')) { Write-Error 'concurrently was not installed'; exit 1 }; & '.\start-dev.ps1'"
 goto :eof
 
 :install_direct
@@ -46,22 +51,32 @@ if not exist "node_modules\.bin\concurrently.cmd" (
 
 :deps_ready
 
-if "%PNPM_OK%"=="1" goto :start_direct
+if not exist "node_modules\electron\dist\electron.exe" goto :repair_electron
+
+goto :start_via_powershell
+
+:repair_electron
+echo [INFO] Electron runtime is missing. Repairing the cached Electron package...
+echo.
+
+if "%PNPM_OK%"=="1" goto :repair_electron_direct
 
 echo [INFO] pnpm is not available in cmd PATH. Starting through PowerShell...
 echo.
-powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath '%CD%'; pnpm dev"
+powershell -NoExit -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; Set-Location -LiteralPath '%CD%'; $env:ELECTRON_MIRROR='https://registry.npmmirror.com/-/binary/electron/'; pnpm rebuild electron --reporter=append-only; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & '.\start-dev.ps1'"
 goto :eof
 
-:start_direct
-echo [INFO] Starting dev environment via "pnpm dev"...
-echo         (Close the Electron window or press Ctrl+C to stop)
-echo.
-
-call pnpm dev
-
+:repair_electron_direct
+call pnpm rebuild electron --reporter=append-only
 if errorlevel 1 (
     echo.
-    echo [ERROR] pnpm dev exited with an error. See output above.
+    echo [ERROR] Electron runtime repair failed. Check the download output above.
     pause
+    exit /b 1
 )
+
+:start_via_powershell
+echo [INFO] Starting dev environment through the Windows launcher...
+echo         (Close the Electron window or press Ctrl+C to stop)
+echo.
+powershell -NoExit -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; Set-Location -LiteralPath '%CD%'; $env:ELECTRON_MIRROR='https://registry.npmmirror.com/-/binary/electron/'; & '.\start-dev.ps1'"

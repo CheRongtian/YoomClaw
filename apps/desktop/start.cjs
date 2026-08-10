@@ -40,6 +40,7 @@ if (!fs.existsSync(exe)) {
   const found = walk(base);
   if (!found) {
     console.error("[YoomClaw] electron binary not found under", base);
+    console.error("[YoomClaw] Run `pnpm rebuild electron` with ELECTRON_MIRROR set, then retry.");
     process.exit(1);
   }
   exe = found;

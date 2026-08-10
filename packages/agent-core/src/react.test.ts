@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSafetyPrompt, buildToolPrompt, callFingerprint, parseToolCall } from "./react.js";
+import {
+  buildSafetyPrompt,
+  buildToolPrompt,
+  callFingerprint,
+  inferExplicitLocalFileCall,
+  looksLikeToolProtocolLeak,
+  parseToolCall,
+} from "./react.js";
 
 test("ReAct parser accepts JSON, fenced JSON and ignores unknown tools", () => {
   const known = new Set(["read_file"]);
@@ -47,4 +54,31 @@ test("full-access prompt tells the model to operate outside the workspace", () =
   assert.match(prompt, /不要因为目标路径位于工作区外而拒绝/);
   assert.match(prompt, /必须实际调用 write_file、edit_file/);
   assert.match(prompt, /不要把完整源码直接作为最终回复/);
+});
+
+test("infers an explicit delete request for one attached local file", () => {
+  assert.deepEqual(
+    inferExplicitLocalFileCall({
+      role: "user",
+      content: "帮我把这个文档删除",
+      localPaths: ["C:\\Users\\demo\\report.docx"],
+    }),
+    { tool: "delete_file", args: { path: "C:\\Users\\demo\\report.docx" } },
+  );
+  assert.equal(
+    inferExplicitLocalFileCall({
+      role: "user",
+      content: "怎么删除这个文档？",
+      localPaths: ["C:\\Users\\demo\\report.docx"],
+    }),
+    null,
+  );
+});
+
+test("recognizes leaked tool-protocol drafts", () => {
+  assert.equal(
+    looksLikeToolProtocolLeak("We need actually tool call, but response must be JSON. I mistakenly final."),
+    true,
+  );
+  assert.equal(looksLikeToolProtocolLeak("这是一个普通的 JSON 格式说明。"), false);
 });

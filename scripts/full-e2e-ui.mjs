@@ -352,9 +352,9 @@ async function main() {
       assert(configResponse.ok, "Gateway 配置状态不可读取");
       const config = await configResponse.json();
       report.capabilities = {
+        agent: config.agent ?? { id: "main", model: "gpt-5.6-luna" },
         mode: config.mode,
         promptMode: config.promptMode,
-        visionConfigured: config.visionConfigured === true,
         imageHostConfigured: config.imageHostConfigured === true,
         searchConfigured: config.searchConfigured === true,
         mcpConfigured: config.mcpConfigured === true,

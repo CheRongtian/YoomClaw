@@ -107,6 +107,20 @@ test("runtime config restores persisted Hermes settings", () => {
   const defaults = loadRuntimeConfig({ YOOMCLAW_DATA_DIR: "" }, { workspace: root });
   assert.equal(defaults.dataDir, path.join(root, ".claw-data"));
 
+  const computerDisabled = loadRuntimeConfig({}, {
+    workspace: root,
+    dataDir: path.join(root, "computer-disabled-data"),
+  });
+  assert.equal(computerDisabled.computerEnabled, false);
+  assert.equal(computerDisabled.toolsets.includes("computer"), false);
+
+  const computerEnabled = loadRuntimeConfig({ YOOMCLAW_COMPUTER_ENABLED: "true" }, {
+    workspace: root,
+    dataDir: path.join(root, "computer-enabled-data"),
+  });
+  assert.equal(computerEnabled.computerEnabled, true);
+  assert.equal(computerEnabled.toolsets.includes("computer"), true);
+
   const emptyToolsets = loadRuntimeConfig({ YOOMCLAW_TOOLSETS: "" }, { workspace: root, dataDir });
   assert.deepEqual(emptyToolsets.toolsets, ["coding", "browser"]);
   const persistedToolsetsWin = loadRuntimeConfig({ YOOMCLAW_TOOLSETS: "coding" }, { workspace: root, dataDir });

@@ -182,7 +182,6 @@ export type ToolsetId =
   | "memory"
   | "skills"
   | "browser"
-  | "vision"
   | "planning"
   | "web"
   | "execution"
@@ -286,11 +285,6 @@ export type AgentEvent =
       type: "browser";
       status: "connected" | "disconnected" | "error";
       url?: string;
-      message?: string;
-    }
-  | {
-      type: "vision";
-      status: "started" | "completed" | "error";
       message?: string;
     }
   | { type: "plan"; plan: PlanState }
@@ -404,7 +398,7 @@ export interface RuntimeConfig {
   toolsets: ToolsetId[];
   safetyMode: SafetyMode;
   browserCdpUrl?: string;
-  visionEnabled: boolean;
+  computerEnabled?: boolean;
 }
 
 export interface SkillSummary {
@@ -421,5 +415,58 @@ export interface BrowserStatus {
   cdpUrl: string;
   pageUrl?: string;
   title?: string;
+  activeTabId?: string;
+  message?: string;
+}
+
+export type BrowserTargetKind =
+  | "css"
+  | "role"
+  | "text"
+  | "label"
+  | "placeholder"
+  | "testId";
+
+export interface BrowserTarget {
+  kind: BrowserTargetKind;
+  value: string;
+  name?: string;
+  exact?: boolean;
+  index?: number;
+}
+
+export type BrowserLocator = string | BrowserTarget;
+
+export interface BrowserActionOptions {
+  tabId?: string;
+}
+
+export interface BrowserTab {
+  id: string;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+export interface BrowserSnapshot {
+  url: string;
+  title: string;
+  text: string;
+  aria?: string;
+  tabId?: string;
+}
+
+export interface BrowserScreenshot {
+  url: string;
+  title: string;
+  path?: string;
+  tabId?: string;
+}
+
+export interface ComputerStatus {
+  enabled: boolean;
+  available: boolean;
+  platform: string;
+  helperVersion?: string;
   message?: string;
 }

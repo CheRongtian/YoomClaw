@@ -9,7 +9,7 @@ import { Gateway } from "./index.js";
 const PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
-test("Gateway sends image data URLs to the image host before the vision run", async () => {
+test("Gateway sends image data URLs to the image host before the main agent run", async () => {
   const originalFetch = globalThis.fetch;
   let imageHostCalls = 0;
   let receivedToken = "";

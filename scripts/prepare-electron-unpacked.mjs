@@ -41,6 +41,13 @@ await fs.mkdir(helperDir, { recursive: true });
 for (const name of ["pdf_extract.py", "document_extract.py"]) {
   await fs.cp(path.join(root, "packages", "gateway", name), path.join(helperDir, name));
 }
+const computerHelperDir = path.join(root, "apps", "desktop", "runtime", "computer-control-win");
+try {
+  await fs.cp(computerHelperDir, path.join(helperDir, "computer-control-win"), { recursive: true, force: true });
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+  console.warn("[YoomClaw] Windows computer helper is not present; packaging will keep the feature unavailable.");
+}
 
 await fs.writeFile(
   path.join(appResources, "app-update.yml"),

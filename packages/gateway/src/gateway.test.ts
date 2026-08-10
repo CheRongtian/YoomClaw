@@ -36,6 +36,13 @@ test("Gateway exposes Hermes config without provider credentials", async () => {
     assert.equal(config.workspace, root);
     assert.equal("authorization" in config, false);
     assert.equal("shareId" in config, false);
+    assert.deepEqual(config.agent, { id: "main", provider: "jimo", model: "test" });
+    assert.equal("visionConfigured" in config, false);
+    assert.equal((config.toolsets as string[]).includes("vision"), false);
+    assert.equal(typeof (config.computer as { enabled?: unknown } | undefined)?.enabled, "boolean");
+    const computerStatusResponse = await fetch(`${base}/api/computer/status`);
+    assert.equal(computerStatusResponse.ok, true);
+    assert.equal(typeof (await computerStatusResponse.json() as { available?: unknown }).available, "boolean");
 
     const modeResponse = await fetch(`${base}/api/config`, {
       method: "PATCH",
@@ -44,6 +51,16 @@ test("Gateway exposes Hermes config without provider credentials", async () => {
     });
     assert.equal(modeResponse.ok, true);
     assert.equal((await modeResponse.json() as { mode: string }).mode, "legacy");
+
+    const computerResponse = await fetch(`${base}/api/config`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ computerEnabled: true }),
+    });
+    assert.equal(computerResponse.ok, true);
+    const computerConfig = await computerResponse.json() as { computerEnabled?: boolean; toolsets?: string[] };
+    assert.equal(computerConfig.computerEnabled, true);
+    assert.equal(computerConfig.toolsets?.includes("computer"), true);
 
     const createResponse = await fetch(`${base}/api/sessions`, {
       method: "POST",

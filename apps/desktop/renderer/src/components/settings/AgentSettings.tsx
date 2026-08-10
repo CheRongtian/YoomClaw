@@ -6,7 +6,6 @@ const TOOLSETS = [
   ["memory", "记忆"],
   ["skills", "Skills"],
   ["browser", "浏览器"],
-  ["vision", "识图"],
   ["planning", "计划"],
   ["web", "网页与搜索"],
   ["execution", "代码执行"],
@@ -25,8 +24,10 @@ interface HermesConfig {
   toolsets: string[];
   safetyMode: "confirm" | "workspace-auto" | "full-access";
   browserCdpUrl?: string;
+  computerEnabled?: boolean;
   browser?: { connected: boolean; cdpUrl?: string; pageUrl?: string; message?: string };
-  visionConfigured: boolean;
+  computer?: { enabled: boolean; available: boolean; platform?: string; helperVersion?: string; message?: string };
+  agent?: { id: string; provider: string; model: string };
   imageHostConfigured: boolean;
   searchConfigured?: boolean;
   mcpConfigured?: boolean;
@@ -48,11 +49,13 @@ const EMPTY_CONFIG: HermesConfig = {
   promptMode: "provider",
   autoMemoryReview: false,
   workspace: "",
-  toolsets: ["coding", "memory", "skills", "browser", "vision", "planning", "web", "execution", "orchestration"],
+  toolsets: ["coding", "memory", "skills", "browser", "planning", "web", "execution", "orchestration"],
   safetyMode: "workspace-auto",
   browserCdpUrl: "http://127.0.0.1:9222",
+  computerEnabled: false,
   browser: { connected: false },
-  visionConfigured: false,
+  computer: { enabled: false, available: false, platform: "win32" },
+  agent: { id: "main", provider: "jimo", model: "gpt-5.6-luna" },
   imageHostConfigured: false,
   searchConfigured: false,
   mcpConfigured: false,
@@ -284,6 +287,13 @@ export default function AgentSettings() {
       </div>
 
       <div className="agent-section-title">工作区与安全</div>
+      <div className="agent-row">
+        <div>
+          <div className="agent-label">主 Agent</div>
+          <div className="agent-hint">当前只有一个主 Agent；图片由它直接理解，图片输入仍必须先经过图床转换为 HTTPS URL。</div>
+        </div>
+        <div className="prompt-mode-fixed" data-testid="main-agent-model">{config.agent?.model ?? "gpt-5.6-luna"}</div>
+      </div>
       <div className="workspace-card">
         <div className="workspace-path" title={config.workspace}>{config.workspace || "未选择工作区"}</div>
         <button className="small-button" data-testid="agent-workspace-choose" onClick={() => void chooseWorkspace()}>选择文件夹</button>
@@ -348,17 +358,19 @@ export default function AgentSettings() {
       <div className="agent-section-title">Skills</div>
       {skills.length === 0 ? <div className="agent-hint">暂无 Skill。Agent 成功完成可复用流程后可以生成草稿。</div> : skills.map((skill) => <div className="skill-row" key={skill.id}><div><div className="agent-label">{skill.name} {skill.status === "draft" && <span className="draft-label">草稿</span>}</div><div className="agent-hint">{skill.description || "无描述"}</div></div>{skill.status === "draft" && <span className="skill-actions"><button className="small-button" data-testid={`skill-apply-${skill.id}`} onClick={() => void applySkill(skill.id, "apply")}>启用</button><button className="small-button danger" data-testid={`skill-reject-${skill.id}`} onClick={() => void applySkill(skill.id, "reject")}>拒绝</button></span>}</div>)}
 
-      <div className="agent-section-title">浏览器与识图</div>
+      <div className="agent-section-title">浏览器与电脑控制</div>
       <div className="browser-card">
-        <div><div className="agent-label">图片上传链路</div><div className="agent-hint">图片先上传到自建图床，再把 HTTPS URL 交给识图机器人。</div></div>
+        <div><div className="agent-label">图片上传链路</div><div className="agent-hint">图片先上传到自建图床，再把 HTTPS URL 交给主 Agent 的视觉能力。</div></div>
         <span className={"status-pill " + (config.imageHostConfigured ? "ok" : "warn")}>{config.imageHostConfigured ? "图床已连接" : "未配置图床"}</span>
       </div>
       <div className="browser-card">
         <div><div className="agent-label">Chrome CDP</div><div className="agent-hint">{config.browser?.connected ? `已连接：${config.browser.pageUrl || "当前页面"}` : "未连接。请用 --remote-debugging-port=9222 启动 Chrome。"}</div></div>
         <div className="browser-actions"><input data-testid="browser-cdp-url" value={config.browserCdpUrl ?? ""} onChange={(event) => setConfig((current) => ({ ...current, browserCdpUrl: event.target.value }))} onBlur={() => void patchConfig({ browserCdpUrl: config.browserCdpUrl })} /><button className="small-button" data-testid="browser-connect" onClick={() => void (config.browser?.connected ? disconnectBrowser() : connectBrowser())}>{config.browser?.connected ? "断开" : "连接"}</button></div>
       </div>
-      <div className="browser-card"><div className="agent-label">识图机器人</div><span className={`status-pill ${config.visionConfigured ? "ok" : "warn"}`}>{config.visionConfigured ? "已配置" : "未配置 Jimo Vision"}</span></div>
-
+      <div className="browser-card">
+        <div><div className="agent-label">Windows UI Automation</div><div className="agent-hint">{config.computer?.available ? `Helper ${config.computer.helperVersion ?? "ready"}` : (config.computer?.message ?? "Helper 未构建")}</div></div>
+        <div className="browser-actions"><span className={"status-pill " + (config.computer?.available ? "ok" : "warn")}>{config.computer?.available ? "可用" : "不可用"}</span><button className="small-button" data-testid="computer-enabled" onClick={() => void patchConfig({ computerEnabled: !config.computerEnabled })}>{config.computerEnabled ? "已启用" : "默认关闭"}</button></div>
+      </div>
       {status && <div className="agent-status">{status}</div>}
 
       <style jsx>{`

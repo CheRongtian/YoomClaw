@@ -14,8 +14,10 @@ import readline from "node:readline/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DEFAULT_RPA = process.env.YOOMCLAW_RPA_SCRIPT?.trim() || "collect-jimo-history-rpa.mjs";
+const AUTOMATION_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(AUTOMATION_DIR, "..");
+const configuredRpa = process.env.YOOMCLAW_RPA_SCRIPT?.trim();
+const DEFAULT_RPA = configuredRpa ? path.resolve(configuredRpa) : path.join(AUTOMATION_DIR, "collect-jimo-history-rpa.mjs");
 
 function parseArgs(argv) {
   const args = {

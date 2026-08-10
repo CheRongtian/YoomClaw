@@ -29,13 +29,13 @@ class ScriptedProvider implements LLMProvider {
   }
 }
 
-class VisionScriptedProvider implements LLMProvider {
-  readonly id = "vision-scripted";
+class ImageScriptedProvider implements LLMProvider {
+  readonly id = "image-scripted";
   readonly requests: ChatCompletionRequest[] = [];
 
   async *chat(request: ChatCompletionRequest): AsyncIterable<ProviderChunk> {
     this.requests.push(request);
-    yield { kind: "content", content: "vision-ok" };
+    yield { kind: "content", content: "image-ok" };
   }
 
   async uploadFile(): Promise<never> {
@@ -81,6 +81,27 @@ class DeleteFileProvider implements LLMProvider {
       kind: "content",
       content: this.call === 1
         ? JSON.stringify({ tool: "delete_file", args: { path: this.targetPath } })
+        : "文件已移到回收站。",
+    };
+  }
+
+  async uploadFile(): Promise<never> {
+    throw new Error("not used");
+  }
+}
+
+class LeakingDeleteProvider implements LLMProvider {
+  readonly id = "leaking-delete";
+  readonly requests: ChatCompletionRequest[] = [];
+  private call = 0;
+
+  async *chat(request: ChatCompletionRequest): AsyncIterable<ProviderChunk> {
+    this.requests.push(request);
+    this.call += 1;
+    yield {
+      kind: "content",
+      content: this.call === 1
+        ? "We need actually tool call, but response must be JSON. I mistakenly final. Need now tool? We can issue commentary? Rules say only one line JSON. Let's do."
         : "文件已移到回收站。",
     };
   }
@@ -192,6 +213,67 @@ test("full-access Agent can move a file outside the workspace to the trash witho
   }
 });
 
+test("attached-file delete recovers from a leaked tool protocol draft", async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-agent-leaked-delete-"));
+  const attachedFile = path.join(path.dirname(workspace), `${path.basename(workspace)}-attached.docx`);
+  const trashDir = path.join(workspace, "trash");
+  const trashedFile = path.join(trashDir, path.basename(attachedFile));
+  fs.mkdirSync(trashDir, { recursive: true });
+  fs.writeFileSync(attachedFile, "remove me", "utf8");
+  const dataDir = path.join(workspace, "data");
+  const sessions = new SessionStore();
+  const session = sessions.create("Leaked delete");
+  const provider = new LeakingDeleteProvider();
+  const agent = new Agent(
+    {
+      provider: "leaking-delete",
+      model: "test",
+      mode: "hermes",
+      promptMode: "provider",
+      toolsets: ["coding"],
+    },
+    provider,
+    sessions,
+    BUILTIN_TOOLS,
+    workspace,
+    {
+      dataDir,
+      promptStore: new PromptStore(workspace, dataDir),
+      memoryStore: new MemoryStore(workspace, dataDir),
+      skillStore: new SkillStore(workspace, dataDir),
+      services: {
+        trash: {
+          move: async (filePath) => {
+            fs.renameSync(filePath, trashedFile);
+          },
+        },
+      },
+    },
+  );
+
+  try {
+    const events = [];
+    for await (const event of agent.run(session.id, {
+      role: "user",
+      content: "帮我把这个文档删除",
+      localPaths: [attachedFile],
+    }, {
+      safetyMode: "full-access",
+    })) {
+      events.push(event);
+    }
+    const toolEnd = events.find((event) => event.type === "tool_end");
+    assert.equal(toolEnd?.type, "tool_end");
+    assert.equal(toolEnd?.isError, false);
+    assert.equal(events.some((event) => event.type === "delta" && event.text.includes("We need actually")), false);
+    assert.equal(fs.existsSync(attachedFile), false);
+    assert.equal(fs.readFileSync(trashedFile, "utf8"), "remove me");
+  } finally {
+    fs.rmSync(attachedFile, { force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("provider prompt mode sends the task without a local bootstrap or review request", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-agent-provider-prompt-"));
   fs.writeFileSync(path.join(root, "note.txt"), "hello from workspace", "utf8");
@@ -283,20 +365,19 @@ test("agent context reaches the provider but stays out of visible session histor
   assert.equal("agentContext" in stored.messages[0], false);
 });
 
-test("vision context is converted to text before the main provider request", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-agent-vision-"));
+test("hosted image parts are forwarded to the main provider", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-agent-image-"));
   const dataDir = path.join(root, "data");
   const sessions = new SessionStore();
-  const session = sessions.create("Vision context");
-  const provider = new VisionScriptedProvider();
+  const session = sessions.create("Image context");
+  const provider = new ImageScriptedProvider();
   const agent = new Agent(
     {
-      provider: "vision-scripted",
+      provider: "image-scripted",
       model: "test",
       mode: "hermes",
       promptMode: "provider",
       autoMemoryReview: false,
-      toolsets: ["vision"],
     },
     provider,
     sessions,
@@ -307,7 +388,6 @@ test("vision context is converted to text before the main provider request", asy
       promptStore: new PromptStore(root, dataDir),
       memoryStore: new MemoryStore(root, dataDir),
       skillStore: new SkillStore(root, dataDir),
-      vision: { analyze: async () => "OCR result" },
     },
   );
 
@@ -324,99 +404,13 @@ test("vision context is converted to text before the main provider request", asy
 
   const requestContent = provider.requests[0].messages[0].content;
   assert.ok(Array.isArray(requestContent));
-  assert.equal(requestContent.some((part) => part.type === "image_url"), false);
+  assert.equal(requestContent.some((part) => part.type === "image_url"), true);
+  assert.equal(requestContent.find((part) => part.type === "image_url")?.image_url.url, "https://files.example.test/image.png");
   assert.match(
     requestContent.map((part) => part.type === "text" ? part.text : "").join("\n"),
-    /OCR result/,
+    /describe image/,
   );
-  assert.equal(events.some((event) => event.type === "final" && event.text === "vision-ok"), true);
-});
-
-test("agent strips raw image parts when Vision is unavailable", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-agent-no-vision-"));
-  const sessions = new SessionStore();
-  const session = sessions.create("No Vision");
-  const provider = new VisionScriptedProvider();
-  const agent = new Agent(
-    {
-      provider: "vision-scripted",
-      model: "test",
-      mode: "hermes",
-      promptMode: "provider",
-      autoMemoryReview: false,
-    },
-    provider,
-    sessions,
-    BUILTIN_TOOLS,
-    root,
-  );
-
-  const input: ChatMessage = {
-    role: "user",
-    content: "[已附加图片：image.png]",
-    agentContext: [
-      { type: "text", text: "describe image" },
-      { type: "image_url", image_url: { url: "https://files.example.test/image.png" } },
-    ],
-  };
-  for await (const _event of agent.run(session.id, input)) {
-    // Consume the event stream.
-  }
-
-  const requestContent = provider.requests[0].messages[0].content;
-  assert.ok(Array.isArray(requestContent));
-  assert.equal(requestContent.some((part) => part.type === "image_url"), false);
-  const requestText = requestContent.map((part) => part.type === "text" ? part.text : "").join("");
-  assert.match(requestText, /当前权限模式：workspace-auto/);
-  assert.match(requestText, /describe image/);
-});
-
-test("agent strips raw image parts when Vision fails", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "yoomclaw-agent-vision-error-"));
-  const dataDir = path.join(root, "data");
-  const sessions = new SessionStore();
-  const session = sessions.create("Vision error");
-  const provider = new VisionScriptedProvider();
-  const agent = new Agent(
-    {
-      provider: "vision-scripted",
-      model: "test",
-      mode: "hermes",
-      promptMode: "provider",
-      autoMemoryReview: false,
-      toolsets: ["vision"],
-    },
-    provider,
-    sessions,
-    BUILTIN_TOOLS,
-    root,
-    {
-      dataDir,
-      promptStore: new PromptStore(root, dataDir),
-      memoryStore: new MemoryStore(root, dataDir),
-      skillStore: new SkillStore(root, dataDir),
-      vision: {
-        analyze: async () => {
-          throw new Error("vision offline");
-        },
-      },
-    },
-  );
-
-  const input: ChatMessage = {
-    role: "user",
-    content: [
-      { type: "text", text: "describe image" },
-      { type: "image_url", image_url: { url: "https://files.example.test/image.png" } },
-    ],
-  };
-  const events = [];
-  for await (const event of agent.run(session.id, input)) events.push(event);
-
-  const requestContent = provider.requests[0].messages[0].content;
-  assert.ok(Array.isArray(requestContent));
-  assert.equal(requestContent.some((part) => part.type === "image_url"), false);
-  assert.equal(events.some((event) => event.type === "vision" && event.status === "error"), true);
+  assert.equal(events.some((event) => event.type === "final" && event.text === "image-ok"), true);
 });
 
 test("agent surfaces a non-empty fallback for a successful empty provider response", async () => {
@@ -455,7 +449,7 @@ test("agent does not expose an unavailable provider tool request as the final an
       mode: "hermes",
       promptMode: "provider",
       autoMemoryReview: false,
-      toolsets: ["vision"],
+      toolsets: ["planning"],
     },
     new UnknownToolProvider(),
     sessions,
