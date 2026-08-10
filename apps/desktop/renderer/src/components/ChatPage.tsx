@@ -44,7 +44,7 @@ import {
   InfoIcon,
 } from "./icons";
 
-const GATEWAY_URL = "http://localhost:18789";
+const GATEWAY_URL = "http://127.0.0.1:18790";
 const SAFETY_MODE_KEY = "yoomclaw-safety-mode";
 const SIDEBAR_WIDTH_KEY = "yoomclaw-sidebar-width";
 const DEFAULT_SIDEBAR_WIDTH = 264;
@@ -2406,5 +2406,5 @@ function wsUrl(apiBase: string): string {
       /* fallthrough */
     }
   }
-  return "ws://localhost:18789/ws";
+  return "ws://127.0.0.1:18790/ws";
 }

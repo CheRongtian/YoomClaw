@@ -25,6 +25,13 @@ NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
 command -v pnpm >/dev/null 2>&1 || pause_on_error "未找到 pnpm，请先安装或通过 Corepack 启用 pnpm。"
 [[ -f ".env" ]] || pause_on_error "缺少 .env。请先执行：cp .env.example .env，然后填写积墨 API 配置。"
 
+GATEWAY_PORT_VALUE="$(sed -n 's/^GATEWAY_PORT=//p' .env | tail -n 1)"
+GATEWAY_PORT_VALUE="${GATEWAY_PORT_VALUE:-18790}"
+[[ "$GATEWAY_PORT_VALUE" == <1-65535> ]] || pause_on_error ".env 中的 GATEWAY_PORT 无效：$GATEWAY_PORT_VALUE"
+if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$GATEWAY_PORT_VALUE" -sTCP:LISTEN >/dev/null 2>&1; then
+  pause_on_error "端口 $GATEWAY_PORT_VALUE 已被占用。请关闭占用程序或修改 YoomClaw 的 Gateway 端口。"
+fi
+
 if [[ ! -x "node_modules/.bin/concurrently" || ! -x "apps/desktop/renderer/node_modules/.bin/vite" || ! -x "apps/desktop/node_modules/.bin/electron" ]]; then
   print -- "[YoomClaw] 开发依赖缺失或处于生产模式，正在恢复依赖。"
   pnpm install --frozen-lockfile --prod=false --config.confirmModulesPurge=false || pause_on_error "依赖安装失败，请检查网络和 pnpm 配置。"

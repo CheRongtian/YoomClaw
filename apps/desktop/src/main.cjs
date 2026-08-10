@@ -3,7 +3,7 @@
  *
  * 功能:
  *   - 创建主窗口 (无边框 + 自定义标题栏，Windows 风格窗口控件接 window.yoomclaw)
- *   - 应用启动时拉起 Gateway 子进程（node + tsx 跑 packages/gateway/src/bin.ts，监听 :18789）
+ *   - 应用启动时拉起 Gateway 子进程（node + tsx 跑 packages/gateway/src/bin.ts，监听 :18790）
  *   - 退出时杀掉 Gateway 子进程
  *   - 系统托盘 (常驻)，关闭/最小化行为由用户设置决定 (settings.cjs)
  *   - 系统通知 (AI 回复完成时)

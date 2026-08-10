@@ -385,6 +385,34 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const convertPathToText = (index: number) => {
+    const attachment = attachments[index];
+    const localPath = attachment?.path;
+    if (!localPath) return;
+
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? text.length;
+    const end = textarea?.selectionEnd ?? start;
+    const before = text.slice(0, start);
+    const after = text.slice(end);
+    const prefix = before && !/\s$/u.test(before) ? " " : "";
+    const suffix = after && !/^\s/u.test(after) ? " " : "";
+    const inserted = `${prefix}${localPath}${suffix}`;
+    const nextText = `${before}${inserted}${after}`;
+    const nextCaret = before.length + inserted.length;
+
+    setText(nextText);
+    removeAttachment(index);
+    window.requestAnimationFrame(() => {
+      const current = textareaRef.current;
+      if (!current) return;
+      current.focus();
+      current.setSelectionRange(nextCaret, nextCaret);
+      current.style.height = "auto";
+      current.style.height = Math.min(current.scrollHeight, 200) + "px";
+    });
+  };
+
   const canSend = (text.trim() || attachments.length > 0) && !disabled && ready && !streaming && !submitting;
 
   return (
@@ -403,6 +431,17 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
             <span className="attach-chip" data-testid="attachment-chip" data-attachment-index={i} key={`${attachment.file.name}-${i}`} title={attachment.path ?? attachment.file.name} style={{ animationDelay: `${Math.min(i, 5) * 24}ms` }}>
               <span className="attach-name">{attachment.file.name}</span>
               <span className="attach-size">{attachment.pathOnly ? "仅路径" : formatSize(attachment.file.size)}</span>
+              {attachment.pathOnly && attachment.path && (
+                <button
+                  type="button"
+                  className="attach-as-text"
+                  onClick={() => convertPathToText(i)}
+                  aria-label={`将 ${attachment.file.name} 的路径转为文字`}
+                  title="将完整路径放入输入框"
+                >
+                  转文字
+                </button>
+              )}
               <button
                 type="button"
                 className="attach-remove"
@@ -644,6 +683,20 @@ export default function ComposeBar({ onSend, onStop, disabled, ready = true, cre
         .attach-size {
           font-size: 10.5px;
           color: var(--text-muted);
+        }
+        .attach-as-text {
+          border: none;
+          border-radius: 999px;
+          padding: 2px 7px;
+          background: color-mix(in srgb, var(--primary) 13%, transparent);
+          color: var(--primary);
+          font-size: 10.5px;
+          line-height: 1.4;
+          white-space: nowrap;
+          cursor: pointer;
+        }
+        .attach-as-text:hover {
+          background: color-mix(in srgb, var(--primary) 22%, transparent);
         }
         .attach-remove {
           width: 18px;

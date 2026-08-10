@@ -9,7 +9,7 @@
 Next.js WebChat (:3000)
    │  WebSocket /ws  (chat.event 流 + tool.decision 确认)
    ▼
-Gateway (:18789, node:http + ws)
+Gateway (:18790, node:http + ws)
    │  Agent.run() 生成器 → AgentEvent 流
    ▼
 Agent Core (ReAct 循环)
@@ -50,11 +50,11 @@ JimoProvider (积墨 SSE)  ──  sandbox.ts 路径沙箱 + judgeCommand 命令
 ```bash
 # 仓库根目录，确保 .env 含 JIMO_SHARE_ID / JIMO_AUTHORIZATION / JIMO_API_BASE_URL
 .\start-dev.ps1
-# Gateway:  http://127.0.0.1:18789
+# Gateway:  http://127.0.0.1:18790
 # WebChat:  http://localhost:3000
 ```
 
-前端直连 Gateway（`NEXT_PUBLIC_GATEWAY_URL=http://127.0.0.1:18789`），不经 Next 代理，
+前端直连 Gateway（`NEXT_PUBLIC_GATEWAY_URL=http://127.0.0.1:18790`），不经 Next 代理，
 避免 rewrite 缓冲 SSE/WS。
 
 ## 遗留事项

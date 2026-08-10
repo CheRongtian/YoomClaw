@@ -207,9 +207,9 @@ function startRenderer(port) {
 
 async function assertGatewayFree() {
   try {
-    const response = await fetch("http://127.0.0.1:18789/api/health");
+    const response = await fetch("http://127.0.0.1:18790/api/health");
     if (response.ok) {
-      throw new Error("Port 18789 is already serving a Gateway; close the running YoomClaw instance before UI smoke.");
+      throw new Error("Port 18790 is already serving a Gateway; close the running YoomClaw instance before UI smoke.");
     }
   } catch (error) {
     if (error instanceof Error && error.message.includes("already serving")) throw error;
@@ -284,7 +284,7 @@ async function main() {
         ...process.env,
         CLAW_RENDERER_URL: `http://127.0.0.1:${rendererPort}`,
         GATEWAY_HOST: "127.0.0.1",
-        GATEWAY_PORT: "18789",
+        GATEWAY_PORT: "18790",
         YOOMCLAW_PROMPT_MODE: "provider",
         YOOMCLAW_AUTO_MEMORY_REVIEW: "false",
         YOOMCLAW_TOOLSETS: "coding,browser",
@@ -307,7 +307,7 @@ async function main() {
       }
     });
 
-    await waitForHttp("http://127.0.0.1:18789/api/health", 60_000);
+    await waitForHttp("http://127.0.0.1:18790/api/health", 60_000);
     await page.getByTestId("compose-bar").waitFor({ state: "visible", timeout: 60_000 });
     await waitFor("Gateway WebSocket connection", async () => {
       const input = page.getByTestId("compose-input");

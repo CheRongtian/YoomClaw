@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SettingLabel, SettingRow, Toggle } from "./controls";
 
-const GATEWAY_URL = "http://localhost:18789";
+const GATEWAY_URL = "http://127.0.0.1:18790";
 const TOOLSETS = [
   { id: "coding", label: "编程", term: "Coding", hint: "读写工作区并完成代码修改。" },
   { id: "memory", label: "记忆", term: "Memory", hint: "读取和保存项目及用户的长期记忆。" },

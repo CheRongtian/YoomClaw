@@ -97,7 +97,7 @@ function FileBrowser({ initialPath = "." }: { initialPath?: string }) {
     const treeRequestId = ++treeRequestRef.current;
     previewRequestRef.current += 1;
     setError(null);
-    void fetch(`http://localhost:18789/api/workspace/tree?path=${encodeURIComponent(relativePath)}`)
+    void fetch(`http://127.0.0.1:18790/api/workspace/tree?path=${encodeURIComponent(relativePath)}`)
       .then(async (response) => {
         const payload = await response.json() as { entries?: WorkspaceEntry[]; error?: string };
         if (!response.ok) throw new Error(payload.error ?? "无法读取工作区");
@@ -123,7 +123,7 @@ function FileBrowser({ initialPath = "." }: { initialPath?: string }) {
     }
     const requestId = ++previewRequestRef.current;
     setError(null);
-    void fetch(`http://localhost:18789/api/workspace/file?path=${encodeURIComponent(nextPath)}`)
+    void fetch(`http://127.0.0.1:18790/api/workspace/file?path=${encodeURIComponent(nextPath)}`)
       .then(async (response) => {
         const payload = await response.json() as { path?: string; content?: string; error?: string };
         if (!response.ok) throw new Error(payload.error ?? "无法预览文件");
@@ -205,7 +205,7 @@ function GitPanel() {
 
   useEffect(() => {
     let alive = true;
-    void fetch("http://localhost:18789/api/workspace/git")
+    void fetch("http://127.0.0.1:18790/api/workspace/git")
       .then((response) => response.json() as Promise<{ available: boolean; branch: string; status: string; diff: string; error?: string }>)
       .then((payload) => { if (alive) setGit(payload); })
       .catch((reason) => {

@@ -1,5 +1,5 @@
 # Start Claw Desktop (Electron) + renderer dev server
-# Gateway is spawned by the Electron main process (node + tsx runs packages/gateway/src/bin.ts on :18789),
+# Gateway is spawned by the Electron main process (node + tsx runs packages/gateway/src/bin.ts on :18790),
 # so no separate gateway step is needed.
 
 $ErrorActionPreference = "Stop"
@@ -31,7 +31,7 @@ $vite = Start-Process -FilePath "node" `
 
 Start-Sleep -Seconds 3
 
-# 2) Start Electron (desktop shell; spawns Gateway :18789 internally)
+# 2) Start Electron (desktop shell; spawns Gateway :18790 internally)
 # NOTE: pnpm-installed electron's path.txt contains "dist\electron.exe" while its index.js
 # also prepends "dist", producing ".../electron/dist/dist/electron.exe" (ENOENT).
 # Work around it by resolving the real electron.exe on disk and launching it directly,
@@ -77,7 +77,7 @@ $electron = Start-Process -FilePath $electronExe `
 Write-Host ""
 Write-Host "Claw Desktop is running!" -ForegroundColor Green
 Write-Host "   Renderer: http://127.0.0.1:5173" -ForegroundColor Gray
-Write-Host "   Gateway : http://127.0.0.1:18789 (spawned by desktop)" -ForegroundColor Gray
+Write-Host "   Gateway : http://127.0.0.1:18790 (spawned by desktop)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "Press Ctrl+C to stop." -ForegroundColor Yellow
 

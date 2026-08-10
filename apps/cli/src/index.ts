@@ -27,7 +27,7 @@ Environment variables (see .env.example):
   JIMO_API_BASE_URL   JimoAI base URL
   JIMO_SHARE_ID       JimoAI share ID
   JIMO_AUTHORIZATION  JimoAI auth token
-  GATEWAY_PORT        Gateway port (default 18789)
+  GATEWAY_PORT        Gateway port (default 18790)
   GATEWAY_HOST        Gateway host (default 127.0.0.1)
 `);
 }

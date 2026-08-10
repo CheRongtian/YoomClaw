@@ -18,7 +18,7 @@ import { _electron } from "../packages/agent-core/node_modules/playwright-core/i
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
-const DEFAULT_GATEWAY_PORT = 18789;
+const DEFAULT_GATEWAY_PORT = 18790;
 const DEFAULT_TIMEOUT = 20_000;
 const LIVE_TIMEOUT = 180_000;
 
@@ -28,7 +28,7 @@ function assert(condition, message) {
 
 function isBlockedError(error) {
   const message = error instanceof Error ? error.message : String(error);
-  return /18789|Gateway|Jimo|credential|凭证|登录|Chrome CDP|不可用|未配置|timeout|超时/i.test(message);
+  return /18790|Gateway|Jimo|credential|凭证|登录|Chrome CDP|不可用|未配置|timeout|超时/i.test(message);
 }
 
 function parseArgs(argv) {

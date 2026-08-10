@@ -1591,7 +1591,7 @@ export function startGateway(config?: Partial<GatewayConfig>): Gateway {
   const env = process.env;
   const finalConfig: GatewayConfig = {
     host: config?.host ?? env.GATEWAY_HOST ?? "127.0.0.1",
-    port: config?.port ?? Number(env.GATEWAY_PORT ?? 18789),
+    port: config?.port ?? Number(env.GATEWAY_PORT ?? 18790),
     workspace: config?.workspace ?? env.YOOMCLAW_WORKSPACE ?? env.CLAW_WORKSPACE ?? process.cwd(),
     agentConfig: config?.agentConfig ?? {
       provider: "jimo",
